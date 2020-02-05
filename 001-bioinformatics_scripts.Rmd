@@ -1,0 +1,30 @@
+---
+title: "001-bioinformatics_scripts"
+author: "Rebecca Cheek"
+date: "2/5/2020"
+output: html_document
+---
+
+
+```{r}
+#load libraries
+
+
+
+
+```
+
+
+These data are comprised of 152, adult, male Island Scrub Jays (*Aphelocoma insularis*). 
+
+```{sh}
+
+process_radtags \
+-p /~/scratch_dir/ISSJs-genomics/raw \
+-b /~/scratch_dir/ISSJs-genomics/barcodes \
+-o /~/scratch_dir/ISSJs-genomics/process_samples/ \
+--inline_null \
+-i gzfastq \
+-y gzfastq -e 'sbfI' -c -q -r -E 'phred33'
+
+```
