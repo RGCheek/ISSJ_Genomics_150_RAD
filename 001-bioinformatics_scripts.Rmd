@@ -9,8 +9,8 @@ output: html_document
 These data are comprised of 152, adult, male Island Scrub Jays (*Aphelocoma insularis*) from accross Santa Cruz Island, California. 
 Sample size is:
 
-Western Oak  = 38
-Central Oak = 59
+Western Oak  = 39
+Central Oak = 60
 Eastern Oak = 12
 Western Pines = 25
 Central Pines = 7
@@ -18,12 +18,10 @@ Eastern Pines = 9
 
 *001- Process Radtags* 
 *Description*: De-multiplex raw reads from sequencer by individual barcodes
-*Associated Data*: Raw reads, barcode file. Output processed fastq.gz 
+*Associated Data*: Raw reads, barcode files for the 2 libraires. Output: processed fastq.gz 
 
-De multiplex reads using process radtags scripts 1.0 and 1.5 
-for libraries 1 and 2 which use the same bacordes so ran sepperately
 
-Be sure to edit the header of each script for your own system. Here is mine as an example:
+Be sure to edit the header of each script for your own system to run it as a job. Here is mine as an example:
 
 #!/bin/bash
 
@@ -34,11 +32,17 @@ Be sure to edit the header of each script for your own system. Here is mine as a
 #SBATCH --mail-type=END
 #SBATCH --mem=10G
 
+Because some of the barcodes overlapp, the process_radtags function from Stacks (v.2.53) needs to be run twice to demultiplex the two libraires.
+
+
+Run the script for the first 72 individuals in Library 1. 
+
+Filename for the script: "01-process_radtags.sh"
 
 ```{sh}
 #!/bin/bash
 
-#SBATCH --job-name=process_radtags
+#SBATCH --job-name=process_radtags_Lib1
 #SBATCH --output=/home/cheek/scratch_dir/ISSJs-genomics/process_samples/process_radtags.out
 #SBATCH --error=/home/cheek/scratch_dir/ISSJs-genomics/process_samples/process_radtags.err
 #SBATCH --mail-user=Rebecca.G.Cheek@gmail.com
@@ -46,9 +50,9 @@ Be sure to edit the header of each script for your own system. Here is mine as a
 #SBATCH --mem=10G
 
 process_radtags \
--p /~/scratch_dir/ISSJs-genomics/raw \
--b /~/scratch_dir/ISSJs-genomics/barcodes \
--o /~/scratch_dir/ISSJs-genomics/process_samples/ \
+-p /home/cheek/scratch_dir/ISSJs-genomics/raw/rawdata_Lib_1 \
+-b /home/cheek/scratch_dir/ISSJs-genomics/names_change_LIB1 \
+-o /home/cheek/scratch_dir/ISSJs-genomics/process_samples/ \
 --inline_null \
 -i gzfastq \
 -y gzfastq -e 'sbfI' -c -q -r -E 'phred33'
@@ -56,11 +60,15 @@ process_radtags \
 ```
 
 
+Run the same code for the 80 individuals in Library 2, but need to specify that it is in a different directory 
+Filename for the script: "01.5-process_radtags2.sh"
 
 ```{sh}
+
+
 #!/bin/bash
 
-#SBATCH --job-name=process_radtags
+#SBATCH --job-name=process_radtags_Lib2
 #SBATCH --output=/home/cheek/scratch_dir/ISSJs-genomics/process_samples/process_radtags.out
 #SBATCH --error=/home/cheek/scratch_dir/ISSJs-genomics/process_samples/process_radtags.err
 #SBATCH --mail-user=Rebecca.G.Cheek@gmail.com
@@ -77,6 +85,22 @@ process_radtags \
 
 
 ```
+
+
+All demultiplexed files are now in the process_samples directory. 
+
+
+Two individuals, F09-123 (Coches) & F11-023 (PZ Valley) seemed to have failed sequencing as they have extremely small filesizes. These were also the same individuals that were dropped by P. Salerno for her analysis so will leave them out by adding them to the "dropped_individuals" directory.
+
+
+Our final sampling breakdown for bioinformatics is:
+
+Western Oak  = 38
+Central Oak = 59
+Eastern Oak = 12
+Western Pines = 25
+Central Pines = 7
+Eastern Pines = 9
 
 
 
