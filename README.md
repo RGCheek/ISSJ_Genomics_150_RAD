@@ -8,6 +8,7 @@ Neutral and adaptive SNP VCFs also available on Dryad. doi:10.5061/dryad.8sf7m0c
 ISSJ.ZF.ordered_imputed_BEAGLE -- conveniently in different formats for scripts to run
 
 ISSJ.ZF.ordered_imputed_BEAGLE_neutral -- For PCA 
+
 radiator_data_neutral --For mantel and neutral popstats since you don't need complete data for these to run
 
 
