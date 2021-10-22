@@ -4,13 +4,21 @@ Code to study the genetic underpinnings of trait divergence at a microgeographic
 
 ## Raw input data 
 
-Neutral and adaptive SNP datasets available on Dryad. doi:10.5061/dryad.8sf7m0cpq
-
-### Phenotype data 
-
-
+Neutral and adaptive SNP datasets also available on Dryad. doi:10.5061/dryad.8sf7m0cpq
+ISSJ.ZF.ordered_imputed_BEAGLE.vcf
+ISSJ.ZF.ordered_imputed_BEAGLE_neutral.vcf
 
 
+### Phenotype & Environment data 
+ISSJ_env_data.csv
+
+ISSJ_resistance_data.csv
+
+issj_filtered.csv
+
+ISSJ_individual_data.csv
+
+ISSJ_environmental_data_final.csv
 
 ## Scripts
 
