@@ -2,7 +2,8 @@
 
 Code to study the genetic underpinnings of trait divergence at a microgeographic scale. Manuscript in review. 
 
-## genomic data 
+## Data
+### Genomic Data
 
 Neutral and adaptive SNP VCFs also available on Dryad. doi:10.5061/dryad.8sf7m0cpq
 ISSJ.ZF.ordered_imputed_BEAGLE -- conveniently in different formats for scripts to run
