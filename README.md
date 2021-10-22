@@ -34,6 +34,8 @@ radiator_script_150_ISSJ
 200–Identification_of_Population_Structure_Associated_with_Habitat_final
 
 300-Identification_of_loci_Underlying_Variation_in_Morphology_final_bedops 
+  Reorder_VCF_issj
+  process_satsuma_assembledchroms
 
 ## log files
 ### GWAS results 
