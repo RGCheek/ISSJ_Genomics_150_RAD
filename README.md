@@ -33,7 +33,7 @@ radiator_script_150_ISSJ
 300-Identification_of_loci_Underlying_Variation_in_Morphology_final_bedops 
 
 ## log files
-###GWAS results 
+### GWAS results 
 GEA_gene_ids_25kb.bed
 gemma_gene_ids_25kb.bed
 rda_gene_ids_25kb.bed
@@ -42,7 +42,7 @@ rda_goids_ensembl.csv
 GEA_goids_ensembl.csv
 gemma_goids_ensembl.csv
 
-#Gemma
+### Gemma
 ISSJ.ZF.ordered_imputed_BEAGLE.cXX.txt
 ISSJ_centered_relatedness.cXX.txt
 ISSJ_standardized_relatedness.sXX.txt
