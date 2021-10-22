@@ -1,0 +1,1444 @@
+---
+title: "100-Analyses_Neutral_Pop_Gen"
+author: "Rebecca Cheek"
+date: "7/2/2020"
+output: html_document
+---
+
+
+
+101-Mantel Test 
+  Finds correlations between (dis)similarity matrices, in this case genetic dissimilarity and geographic dissimilarity to determine whether spatial genetic structure can be attributed to IBD. Implemented using the mantel function in “vegan” R package, and calculated using bot loci and allelic genetic differences between individuals and  Haversine distance.
+```{r message=FALSE, warning=FALSE, include=FALSE}
+##############
+### Libraries 
+##############
+library(tidyverse)
+library(ade4)
+library(adegenet)
+library(spdep)
+library(hierfstat)
+library(PopGenReport)
+library(ggthemes)
+library(Demerelate)
+library(mmod)
+library(spdep)
+library(SoDA)
+library(MASS)
+library("poppr")
+library("pegas")
+library("ape")
+library(geodist)
+library(ecodist)
+library(vcfR)
+library(vegan)
+library(compare)
+library(hierfstat)
+library(StAMPP)
+library(reshape2)
+library(ggpubr)
+library(strataG)
+library(lme4)
+library(usdm)
+library(MuMIn)
+library(tidybayes)
+library(mosaic)
+library(gdata)
+library(topoDistance)
+library(effectsize)
+library(memgene)
+library(raster)
+library(sp)
+library(sf)
+library(tigris)
+library(rasterize)
+library(ggthemes)
+library(ggspatial)
+library(ggsn)
+library(psych)
+library(viridis)
+library(cowplot)
+library(rspatial)
+library(maptools)
+library(rgdal)
+library(gridExtra)
+library(RColorBrewer)
+```
+
+
+
+```{r}
+
+#################################
+##   Mantel test               ##        
+#################################
+
+# Load Data
+
+#read in filtered genind object from radiator & convert to different formats 
+
+
+issjvcfr <- read.vcfR("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/Filtered_Data/Neutral_SNPs/radiator_data_neutral.vcf")
+
+issj_genind <-vcfR2genind(issjvcfr)
+
+#Need to first assign all individuals to the same population
+SCI <- paste0(("1"))
+
+issj_genind@pop <- as.factor(rep(SCI, each=123)) 
+
+
+#calculate basic statistic using hierfstat
+
+issj_hierfstat <- genind2hierfstat(issj_genind) # Create hierfstat object
+
+issj_hierfstat$pop <- as.integer(issj_hierfstat$pop)
+
+
+# Ho	
+# A table –with np (number of populations) columns and nl (number of loci) rows– of observed heterozygosities
+# Hs	
+# A table –with np (number of populations) columns and nl (number of loci) rows– of observed gene diversities
+# Fis	
+# A table –with np (number of populations) columns and nl (number of loci) rows–of observed Fis
+#Ht (pi)
+#overall gene diversity
+
+pop_stats <- basic.stats(issj_hierfstat, diploid = TRUE, digits = 2)
+pop_stats$overall
+# Ho     Hs     Ht    Fis  
+# 0.26   0.27   0.27  0.06 
+#from popaultions its 
+#obs_het= 0.74, obs_hom=.27, pi= .27
+#might roll with popualtions since it also includes the variance and stderror 
+
+
+
+#get confidence interval for Fis 
+boot.ppfis(dat=issj_hierfstat) 
+
+
+
+#convert to genlight
+issj_genlight <-vcfR2genlight(issjvcfr)
+
+#convert to genepop
+issj.pop<- adegenet::genind2genpop(issj_genind)
+
+
+
+
+##############################################
+## #Calculate genetic distance with a few different methods
+
+##############################################
+
+
+#Effective population size using StrataG
+
+#create gtypes object 
+
+issj_gtypes <- genind2gtypes(issj_genind)
+
+#estimate effective popualtion size using ld method Estimate Ne from linkage disequilibrium based on Pearson correlation approximation following Waples et al 2016. 
+
+issj.Ne <- ldNe( issj_gtypes, by.strata = FALSE, ci = 0.95, drop.missing = TRUE)
+#   stratum   S num.comp    mean.rsq  mean.E.rsq       Ne param.lci param.uci
+# 1       1 123   210276 0.009296446 0.008340935 346.7709  327.3101  368.4645
+
+
+## proportion of shared alleles genetic distance matrix from adegenet
+issj.propshared <- propShared(issj_genind)
+hist(issj.propshared)
+
+#testing to find the proportion distance by 1- matrix 
+
+issj.propshared.dist <- 1-issj.propshared
+
+
+## Genetic distance due to relatedness from popGenReport 
+
+issj.relatedness <- gd.smouse(issj_genind)
+hist(issj.relatedness)
+
+
+
+
+#Import the environmental data with the locality information, but filter out the individuals that were removed during filtering in Radiator 
+
+env <- read.csv("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/ISSJ_environmental_data_final.csv")
+
+
+issj_filtered <- read.csv("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/issj_filtered.csv")
+
+
+pred <- anti_join(env, issj_filtered,  by="tissue_number")
+
+
+#order the pred file so that it matches with the genetic data (which is ordered by tissue number)
+
+#convert genetic file to a dataframe 
+
+genfile <- as.data.frame(issj_genlight)
+
+pred <- pred[match(rownames(genfile), pred[,1]),]
+
+identical(pred$tissue_number,rownames(genfile)) 
+
+
+#Geographic data frame
+geo <- pred %>% 
+  dplyr::select(c(tissue_number, Longitude, Latitude))
+
+#Calculate the geographic distance 
+#bear in mind this doens't work with UTMs, so stick with lat long
+d.geo <- geodist::geodist(geo, measure="geodesic") 
+#measure = "geodesic" denotes the very accurate geodesic methods given in Karney (2013) "Algorithms for 
+#geodesics" J Geod 87:43-55, and as provided by the codesf::st_dist() function.
+
+d.geo <- as.dist(d.geo)
+
+#A simple Mantel test examines whether
+#closer-together samples (smaller distance between sample locations) are more similar than farther-apart samples.
+
+
+
+#run the mantel test for the proportion of shared alleles distance
+vegan::mantel(issj.propshared.dist, d.geo, method = "pearson", permutations = 999, na.rm = TRUE)
+# Mantel statistic r: 0.2352, Significance: 0.001 
+
+
+#run the mantel test for smouse-distance based on relatedness  
+vegan::mantel(issj.relatedness, d.geo, method = "pearson", permutations = 999, na.rm = TRUE)
+# Mantel statistic r: 0.3466 
+#       Significance: 0.001 
+
+
+```
+
+So there does apprear to be a signal of isolation by distance in our genetic data. But we can parse out exactly where this signal is coming from with a mix of methods. 
+
+
+102- PCA
+		Description: PCAs uses a reduced number of orthogonal axes to maximize variation between allele frequencies wihtout making any assumptions about hirarchical popualtion gentic structure or geographic space. 
+		Associated data: Filtered SNPs dataset that only includes the “neutral” variants, sampling data for each individual and raster file for SCI. 
+		Results: Map illustrating population genetic structure across the island by plotting the loading on our PCA axes
+
+
+```{r message=FALSE, warning=FALSE}
+
+########################################
+# Principal Components Analysis
+########################################
+
+library(akima)
+library(poppr)
+library(splancs)
+
+# #We can first seek a global picture of the genetic diversity among genotypes using a Principal Component Analysis (PCA, function dudi.pca in the ade4 package). The analysis is performed on a table of standardized alleles frequencies, obtained by scaleGen. Note that we disable the scaling option when performing the PCA, which would otherwise re-scale the
+# data and therefore erase the previous scaling of scaleGen.
+
+#Because dudi.pca does not work with missing values we will check to see how much missing data there is in our non-imputed dataset 
+#first, check to see how many missing values are in the genind object
+missingno(issj_genind, type = "loci")
+
+
+#to avoid issues from using the mean or 0 as a quick imputation method from whats available in adegenet. We will therefore use the imputed dataset from BEAGLE that has been mapped to the ZEFI genome to make our PCA. This vcf has been further filtered by PCAdapt to remove any loci putatively under selection, of which were 3, so there are 3342 SNPs here
+
+#test with the non-imputed data
+issjvcfr <- read.vcfR("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/Filtered_Data/ISSJ.ZF.ordered_imputed_BEAGLE_neutral.vcf")
+
+
+issj_genind <-vcfR2genind(issjvcfr)
+
+#Need to first assign all individuals to the same population
+SCI <- paste0(("1"))
+
+issj_genind@pop <- as.factor(rep(SCI, each=123)) 
+
+
+#can firt test what it looks like with dudi.pca
+# The function dudi.pca displays a barplot of eigenvalues and asks for a number of retained principal components:
+
+
+issj.pca1 <- dudi.pca(issj_genind, scale=T, scannf=FALSE, nf=6)
+
+
+#Eigenvalues in issj.pca1$eig correspond to absolute variances. However, we sometimes
+#want to express these values as percentages of the total variation in the data. #This is achieved
+#by a simple standardization:
+eig.perc <- 100*issj.pca1$eig/sum(issj.pca1$eig)
+head(eig.perc)
+
+library("factoextra")
+fviz_eig(issj.pca1, choice="variance", geom="bar") #looks like PC 1 explains ~2.5 % of the variation
+
+barplot(issj.pca1$eig, main="ISSJ dataset - PCA eigenvalues", col=heat.colors(length(issj.pca1$eig))) #it looks like first pc axis is where most of the variance is explained
+
+
+
+#To make the plot 
+#since there isn't a true range map of the species since the island is so small, will instead interpolate values using the veigitation layers like KL
+
+#Read in vegitation shape file. Convert to sf object
+
+veg.df <- st_read("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/GIS_Data/Daryl/scveg_ISSJhabitat_NAD83.shp")
+
+
+#transform the veg data to the same format as CA simple feature
+veg.sf <- sf::st_as_sf(veg.df, crs="+proj=longlat") 
+veg.sf <- st_transform(veg.sf, crs="+proj=longlat")
+
+#make a mask of the veg polygons so only that shows up
+
+
+
+#filter to just the pine oak layers where the jays are
+#"other" vegitation includeds grass and shrublands, where the jays are less common so will just remove
+
+oak_sf <- veg.sf %>% 
+  dplyr::filter(Oak_Pine==c("oak"))
+  
+oak_sf  <- st_transform(oak_sf, crs="+proj=longlat")
+
+#filter to just pine
+
+pine_sf <- veg.sf %>% 
+  dplyr::filter(Oak_Pine==c("pine"))
+
+
+#create vectors of the x and y data coordinates
+x <- pred$Longitude
+y <- pred$Latitude
+
+xy <- cbind(x,y)
+
+#Create vectors of the x and y coordinates to evauate the interpolating function 
+interpX <- seq(min(x),max(x),le=900)
+interpY <- seq(min(y),max(y),le=900)
+
+
+#quick look at the spatial distribution of tte PC values
+s.value(xy,  issj.pca1$li[,1], neig=NULL,  # PC axis 1
+        method = "squaresize", include.origin=F, addaxes=F,
+        clegend=1, csize=.6,
+        sub="PC Axis 1 (2.2% variance)", csub=2, possub="bottomright") # legend
+
+#can then interpolate accross geographic space to see how the genetic data loads on ordination space relative to sampling locality
+temp <- akima::interp(x, y, issj.pca1$li[,1], xo=interpX, yo=interpY, duplicate = TRUE) 
+
+#now we can try the same thing using the rda function fromt he vegan package which is the same thing as a pca
+
+issj.X <- as.matrix(issj_genind)
+
+issj.pca1 <- rda(issj.X)
+
+summary(issj.pca1)$cont #proportion explained by the first PC axis if .0217, so the same as dudi.pca
+
+screeplot(issj.pca1, main = "Screeplot: Eigenvalues of Predictor Variables")
+
+
+#We'll store our synthetic PC axis predictor as pred.PC1 for use in mapping.
+
+pred.PC1 <- scores(issj.pca1, choices=1, display="sites", scaling=0)
+
+
+
+#quick and dirty plot
+plot(pred.PC1)
+
+
+#interpolate accross sample points using the first PC axis 
+temp <- akima::interp(x, y, pred.PC1, xo=interpX, yo=interpY, duplicate = TRUE) 
+
+#quick and dirty plot
+image(temp)
+
+
+#smooth interpolate across the sampling area
+gdat <- akima::interp2xyz(temp, data.frame=TRUE)
+
+# Create a SpatialPointsDataFrame by defining the coordinates
+
+coordinates(gdat) <- c("x", "y")
+
+proj4string(gdat) <- CRS("+proj=longlat" )
+
+gdat <-st_as_sf(gdat)
+
+gdat <- st_transform(gdat, crs="+proj=longlat")
+
+plot(gdat)
+
+# clip the interpolated data so it just fits in the oak veg layers
+SCIclip <- st_intersection(gdat, oak_sf)
+
+SCIclip_coor <-  do.call(rbind, st_geometry(SCIclip)) %>% 
+    as_tibble() %>%
+  setNames(c( "x", "y"))
+
+#add the coordinates 
+SCIclip <- cbind(SCIclip, SCIclip_coor)
+
+
+#clip to just the pine layers 
+
+Pine_clip <- st_intersection(gdat, pine_sf)
+
+
+
+# Merging each polygon with its neighbors
+#This takes a very long time to run. Like 20 min
+
+geom = list()
+for(i in 1:nrow(Pine_clip)) {
+   geom[[i]] = st_union(Pine_clip[Pine_clip[i, ], ])
+ }
+
+#extract the coordinates
+pine_geom <- do.call(c, geom)
+
+Pineclip_coor <-  do.call(rbind, st_geometry(pine_geom)) %>% 
+    as_tibble() %>%
+  setNames(c( "x", "y"))
+
+#add the coordinates 
+Pine_clip <- cbind(Pine_clip, Pineclip_coor)
+
+#read in Santa Barbara county boundary as an sf object
+ca_tracts <- tracts(state = 06, county = c(083,111), cb = TRUE, class = "sf")
+ca_tracts <- sf::st_as_sf(ca_tracts, crs="+proj=longlat") 
+ca_tracts <- st_transform(ca_tracts, crs="+proj=longlat")
+
+
+
+#read in california counties
+ca_counties <- ca_tracts %>% 
+  group_by(COUNTYFP) %>% 
+  summarise()
+
+
+#plot the interpolated values from the first PC axis pine and oak Veg layers as grey, pine outlined in black. 
+IBD_PCA <- ggplot() +
+  geom_sf(data = ca_tracts, fill="lightgrey",alpha=.05)+
+  geom_sf(data=oak_sf, fill="grey59", linetype="blank")+
+    geom_tile(data=SCIclip, aes(x = x, y = y, fill=z))+
+scale_fill_viridis(na.value=NA, name="PC1\nLoadings", direction=1)+
+  geom_sf(data=pine_sf, color="black", size=1.35)+
+      geom_tile(data=Pine_clip, aes(x = x, y = y, fill=z))+
+   scale_fill_viridis(na.value=NA, name="Predicted PC1\nLoadings", direction=-1)+
+  geom_sf(data = ca_tracts,lwd=1, fill=NA, color="black", clip=TRUE)+
+ coord_sf(xlim=c( -119.94, -119.5), ylim=c(33.9,34.2)) +
+  theme_few()+
+    guides(linetype=F, alpha=F)+
+  labs(y="Latitude", x="Longitude")+
+   theme(legend.title = element_text(color="black",face="bold", size=10),
+    axis.text.x = element_text(color="black",face="bold", size=10), 
+        axis.text.y = element_text( color="black",face="bold", size=10),
+        axis.line = element_line(colour = "black"),
+        axis.title=element_text(colour="black", size = 12,face="bold"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    panel.background = element_blank())+
+   theme_void()  # gets rid of lat long axes
+
+IBD_PCA
+
+
+#Plot of all the invidual sampling localities if needed, but have a cooler looking plot from GIS
+
+veg <- ggplot(data = ca_tracts) +
+  geom_sf(color="transparent") +
+  geom_sf(data=veg.sf[,10], aes(fill=Oak_Pine), linetype="blank")+
+  scalebar(x.min = -119.96, x.max = -119.55,
+                   y.min = 33.94, y.max = 34.14,
+                   dist = 2, dist_unit = "km",
+             transform = TRUE, model = "WGS84", height=.025, st.size=3) +
+  scale_fill_manual(values=c("orange","lightgrey","darkgreen"), name="Habitat")+
+  geom_point(aes(x = Longitude, y = Latitude), color="black", data=env)+
+     guides(size=F, alpha=F)+
+  labs(y="Latitude", x="Longitude")+
+  coord_sf(xlim = c(-119.96, -119.5), ylim = c(33.9, 34.15), expand = FALSE) +
+ theme_few() 
+
+veg
+
+
+##plot PCA in ordination space
+###### To highlight individuals by Habitat
+
+eco <- pred %>% 
+  mutate(habitat = recode_factor(pred$POP,"E-O"="Oak","W-O"="Oak","C-O"="Oak",
+                      "E-P"="Pine","W-P"="Pine","C-P"="Pine"))
+
+
+#specify the order of the factor levels 
+eco$habitat <- factor(eco$habitat, levels=c("Oak","Pine"))
+
+
+#custom color pallet
+myCol2 <- c("orange","forestgreen")
+
+#Extract the scores from the rda
+#Be sure to scale everyting symmetrically by using the scaling=3 argument which will scale based on the square root of the eigenvalues
+issj_sam_sco <- scores(issj.pca1, display = "sites", scaling=3)
+issj_sam_tbl <- as_tibble(issj_sam_sco)
+issj_sam_tbl <- mutate(issj_sam_tbl, tissue_number=rownames(issj_sam_sco),
+                       ccatype = "sites")
+issj_sam_tbl <- left_join(eco[,c(1:2,25)], issj_sam_tbl, by="tissue_number")
+
+
+#extract the loading scores of the snps 
+
+issj_spp_sco <- scores(issj.pca1, display = "species", scaling=3)
+issj_spp_tbl <- as_tibble(issj_spp_sco)
+issj_spp_tbl <- mutate(issj_spp_tbl, vgntxt=rownames(issj_spp_sco),
+                       ccatype = "species")
+
+
+
+
+#with ggplot
+pc_plot_12 <- ggplot() +
+      geom_point(data=issj_sam_tbl,aes(x=PC1,y=PC2, fill=habitat), shape=21,  color="black", size=4) +# the jays
+   scale_fill_manual(name="Habitat", values=c("orange","forestgreen"))+
+  geom_hline(yintercept = 0, lty = 2) +
+      geom_vline(xintercept = 0, lty = 2) +
+    theme_few()+
+    xlab("PC Axis 1 (2.2%)") + ylab("PC Axis 2 (1.5%)") +
+  theme(legend.position =c(.97,.77),
+        legend.justification = c("right", "top"),
+    legend.title = element_text(size=12, face="bold"),
+        legend.text = element_text(size=12, face="bold"),
+        axis.title=element_text(colour="black", size = 15,face="bold"),
+     axis.text=element_text(colour="black", size = 13,face="bold"))
+
+pc_plot_12
+
+
+```
+
+
+
+**103- MEMGENE**
+		Description: Use multivariate ssion approach to extract the spatially relevant genetic variation using Moran Eigenvector Maps and the proportion of shared alleles between individuals to test for neutral population genetic structure across the island and between habitats. 
+		Associated data: Filtered SNPs dataset that only includes the “neutral” variants
+		Results: Detecting weak spatial genetic patterns for use in sPCA 
+
+```{r message=FALSE, warning=FALSE}
+#MEMGENE requires a genetic distance matrix giving the pairwise genetic distances
+#among individual genotypes. Any genetic distance metric can be used. In principle the
+#method will also work with a population genetic distance matrix 
+
+## Extract the MEMgene variables by running the MEMGENE analysis in the proportion of shared alleles 
+# The mgQuick function does the following: (1) Finds the MEM eigenvectors given the
+# sampling locations of the individuals (mgMEM function); (2) Uses these eigenvectors to
+# identify significant spatial genetic patterns (mgForward and mgRDA functions); (3) Returns MEMGENE variables that describe these significant patterns on a reduced set of axes (mgRDA function).
+
+
+radialAnalysis <- mgQuick(issj.relatedness, xy)
+
+#relatedness
+# Forward selections of positive Moran's eigenvectors
+# ----Selected: 1, 2, 3, 4, 5, 6, 7, 9, 10, 12 
+
+#propshared
+# Forward selections of positive Moran's eigenvectors
+# ----Selected: 1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12 
+
+#Finding the adjusted R-squared (i.e. the genetic variation explained by spatial pattern)
+
+radialAnalysis$RsqAdj
+
+# 0.04713417 for relatedness
+#0.01662441 for propshared
+
+#Note that this low value should be interpreted not as an inadequacy of the ssion to
+#explain variation, but rather that there is only a small proportion of all genetic variation that can be attributed to spatial patterns.
+
+
+#Then determining the proportion of the this variation that is explained by each of the
+#MEMGENE variables is also straightforward:
+
+
+## Find the proportional variation explained by each MEMGENE variable
+issjMEMGENEProp <- radialAnalysis$sdev/sum(radialAnalysis$sdev)
+
+## Neatly print proportions for the first three MEMGENE variables
+format(signif(issjMEMGENEProp, 3)[1:12], scientific=FALSE)
+
+
+## Visualize the first two MEMGENE variables
+## by providing only the first two columns of the memgene matrix
+# The MEMGENE variables represent orthonormal patterns of significant spatial genetic
+# variation, and are ordered in terms of the amount of variation they explain from most
+# to least. Typically, much of the variation is summarized in the first two variables, so it
+# can often be convenient to visualize these two initially.
+
+mgMap(xy[,1:2], radialAnalysis$memgene[, 1:2])
+
+# However, it is often more interesting to visualize the MEMGENE variables superimposed
+# over a map.
+#In the figure below we superimpose the first MEMGENE
+# variable (MEMGENE1) over the resistance surface used to create the spatial genetic
+# data. This can be done using the add.plot=TRUE parameter.
+
+issj_memgen1 <- radialAnalysis$memgene[, 1]
+issj_memgen2 <- radialAnalysis$memgene[, 2]
+
+
+#Read in vegitation shape file. Convert to sf object
+
+veg.df <- st_read("C:/Users/Rebecca/Dropbox/GIS/GISfiles/Daryl/scveg_ISSJhabitat_NAD83.shp")
+
+#transform the veg data to the same format as CA simple feature
+veg.sf <- sf::st_as_sf(veg.df, crs="+proj=longlat") 
+veg.sf <- st_transform(veg.sf, crs="+proj=longlat")
+
+veg.sf <- veg.sf %>% 
+  group_by(Oak_Pine)
+
+
+
+#interpolate MEM variables accross SCI
+
+
+#filter to just the pine oak layers where the jays are
+#"other" vegitation includeds grass and shrublands, where the jays are less common so will just remove
+
+oak_pine_sf <- veg.sf %>% 
+  dplyr::filter(Oak_Pine==c("oak"))
+
+#filter to just pine
+
+pine_sf <- veg.sf %>% 
+  dplyr::filter(Oak_Pine==c("pine"))
+
+  
+#out of curiosity, how much area is classified as woody vegitation
+sum(st_area(oak_pine_sf))
+# equals 30954971 [m^2], which is about 3096 hectares 
+
+
+
+#Create vectors of the x and y coordinates to evauate the interpolating function 
+interpX <- seq(min(x),max(x),le=900)
+interpY <- seq(min(y),max(y),le=900)
+
+
+#interpolate accross sample points 
+temp <- akima::interp(x, y, radialAnalysis$memgene[, 1], xo=interpX, yo=interpY, duplicate = TRUE) 
+
+image(temp)
+
+
+#smooth interpolate across the sampling area
+gdat <- akima::interp2xyz(temp, data.frame=TRUE)
+
+# Create a SpatialPointsDataFrame by defining the coordinates
+coordinates(gdat) <- c("x", "y")
+
+
+proj4string(gdat) <- CRS( "+proj=longlat" )
+
+gdat <-st_as_sf(gdat)
+
+gdat <- st_transform(gdat, crs="+proj=longlat")
+
+plot(gdat)
+
+# clip the interpolated data so it just fits in the oak veg layers
+SCIclip <- st_intersection(gdat, oak_pine_sf)
+
+SCIclip_coor <-  do.call(rbind, st_geometry(SCIclip)) %>% 
+    as_tibble() %>%
+  setNames(c( "x", "y"))
+
+#add the coordinates 
+SCIclip <- cbind(SCIclip, SCIclip_coor)
+
+
+#clip to just the pine layers 
+
+Pine_clip <- st_intersection(gdat, pine_sf)
+
+
+
+# Merging each polygon with its neighbors
+#This takes a very long time to run
+
+geom = list()
+for(i in 1:nrow(Pine_clip)) {
+   geom[[i]] = st_union(Pine_clip[Pine_clip[i, ], ])
+ }
+
+#extract the coordinates
+pine_geom <- do.call(c, geom)
+
+Pineclip_coor <-  do.call(rbind, st_geometry(pine_geom)) %>% 
+    as_tibble() %>%
+  setNames(c( "x", "y"))
+
+#add the coordinates 
+Pine_clip <- cbind(Pine_clip, Pineclip_coor)
+
+
+#read in california counties
+ca_counties <- ca_tracts %>% 
+  group_by(COUNTYFP) %>% 
+  summarise()
+
+
+#plot the interpolated values from the first MEM ais pine and oak Veg layers as grey, pine outlined in black. 
+IBD_MEM <- ggplot() +
+  geom_sf(data = ca_tracts, fill="lightgrey",alpha=.05)+
+  geom_sf(data=oak_pine_sf, fill="grey59", linetype="blank")+
+    geom_tile(data=SCIclip, aes(x = x, y = y, fill=z))+
+scale_fill_viridis(na.value=NA, name="MEM1\nValues", direction=1)+
+  geom_sf(data=pine_sf, color="black", size=1)+
+      geom_tile(data=Pine_clip, aes(x = x, y = y, fill=z))+
+   scale_fill_viridis(na.value=NA, name="MEM1\nValues", direction=-1)+
+  geom_sf(data = ca_tracts,lwd=1, fill=NA, color="black", clip=TRUE)+
+ coord_sf(xlim=c( -119.94, -119.5), ylim=c(33.9,34.2)) +
+  theme_few()+
+    guides(linetype=F, alpha=F)+
+  labs(y="Latitude", x="Longitude")+
+   theme(legend.title = element_text(color="black",face="bold", size=10),
+    axis.text.x = element_text(color="black",face="bold", size=10), 
+        axis.text.y = element_text( color="black",face="bold", size=10),
+        axis.line = element_line(colour = "black"),
+        axis.title=element_text(colour="black", size = 12,face="bold"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    panel.background = element_blank())+
+   theme_void()  # gets rid of lat long axes
+
+IBD_MEM 
+
+
+
+```
+
+
+
+104- Clustering algorithms 
+		Description: Admixture in the R package LEA which utilizes a least-squares estimate of ancestry, and the Baysian approach of STRUCTURE (separate program with GUI interface so no code)
+		Associated data: Neutral SNP dataset 
+		Figures & Results: Admixture plots with tests of K from 1:6
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+
+#############################
+# Admixture analysis in R using LEA
+##########################
+library(LEA)
+library(pegas)
+library(ape)
+library(vcfR)
+library(raster)
+library(sp)
+library(sf)
+library(tigris)
+library(rasterize)
+library(stars)
+library(ggthemes)
+library(mapplots)
+library(ggplot2)
+library(rgeos)
+library(tess3r)
+
+issj_geno <- vcf2geno("C:/Users/Rebecca/Downloads/ISSJ_imputed.vcf")
+
+issjvcfr <- read.vcfR("C:/Users/Rebecca/Desktop/r_coding/data/data/Filtered_Data/radiator_data_neutral.vcf")
+
+issj_genind <-vcfR2genind(issjvcfr)
+issj_loci <- genind2loci(issj_genind)
+issj_geno <- vcf2geno("C:/Users/Rebecca/Desktop/r_coding/data/data/Filtered_Data/radiator_data_neutral.vcf")
+
+
+env <- read.csv("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/ISSJ_environmental_data_final.csv")
+
+
+issj_filtered <- read.csv("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/issj_filtered.csv")
+
+
+pred <- anti_join(env, issj_filtered,  by="tissue_number")
+
+
+#order the pred file so that it matches with the genetic data (which is ordered by tissue number)
+pred <- pred[order(pred[,1], rownames(issj_loci)),]
+
+
+
+#determine the most likely value of K (clusters). Choosing the number of clusters is based on the cross-entropy criterion. This criterion
+# is also used by the program snmf. The cross-entropy criterion is based on the prediction of a fraction of masked genotypes (matrix completion), and on the
+# cross-validation approach. Smaller values of the cross-entropy criterion usually mean better
+# runs. We perform runs for 6 values of K, and choose the value of K for which the cross-entropy
+# curve exhibits a plateau or exhibits a clear minimum value. 
+
+issj_k  <- snmf(issj_geno, K = 1:6, ploidy = 2, rep=10, entropy = T, alpha = 100, project= "new")
+
+# plot cross-entroypy criterion for each K
+K <-summary(issj_k)$crossEntropy %>%
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column("temp") %>%
+  mutate(K = as.numeric(str_extract(temp, "(\\d)+"))) %>%
+  dplyr::select(-temp)
+
+# choose K for which the function plateaus or increases sharply
+kplot <-ggplot(K, aes(x = K, y = mean)) +
+  geom_line(color = "black", size = 0.25 ) +
+  geom_segment(aes(x = K, y = min, xend = K, yend = max)) +
+  geom_point(shape = 21, size = 4, color = "black", fill = "darkorange") +
+  scale_x_continuous(breaks = seq(0, 10, by = 1)) +
+  labs(x = "number of ancestral populations", y = "cross-entropy criterion") +
+  theme_few()
+
+
+#looks like k=1 is the most likely number of clusters since cross entropy increases with more clusters but K=2 also looks like it has 
+#fairly minimal entropy. 
+# identify best run for chosen K value
+run <- which.min(cross.entropy(issj_k, K = 2))
+
+# extract q.matrix. The qmatrix object contains the matrix of ancestry coefficients
+#for each individual for K clusters
+
+q.matrix <- Q(issj_k, K = 2, run = run) %>% 
+  as.data.frame() 
+
+issj.q.matrix <- cbind(pred[,1:4], q.matrix) %>% 
+  arrange(desc(Longitude)) %>% 
+  gather(cluster, value, V1:V2, factor_key=TRUE) %>% 
+  group_by("tissue_number")
+
+#Lets visualise the results with a barplot
+snmf.bar <- ggplot()+
+  geom_bar(data=issj.q.matrix, aes(fill=cluster, y=value, x=tissue_number), stat="identity",  width=1) +
+  scale_fill_manual(values=c("orange","blue"))+
+  labs(x="", y="")+
+  labs(x = "Individuals", y = "Admixture coefficients")+
+  theme_minimal()+
+    theme(axis.text.x = element_blank())
+
+barplot(t(q.matrix), border = NA, col = c("orange","blue"), space = 0, xlab = "Individuals", ylab = "Admixture coefficients")
+
+
+
+###################################
+# Plotting
+##################################
+
+#read in SCI base raster
+
+#can download tiff from the noaa website https://maps.ngdc.noaa.gov/viewers/grid-extract/index.html
+#and then covert to a raster layer using the code below 
+
+#read in raster file and plot to make sure it looks correct
+SCI <- raster("C:/Users/Rebecca/Dropbox/ISSJ/issj_genomics/SCI_raster.asc")
+
+plot(SCI)
+
+
+#select just the coordinates from the predictor dataset of filtered individuals 
+pred_latlong <- pred %>% 
+  dplyr::select(c(tissue_number,Longitude, Latitude))
+
+
+#map out qmatirx in ggplot
+
+#can plot out the polygons but takes a while
+SCI_poly <- rasterToPolygons(SCI, fun=function(x){x>20})
+
+#plot(SCI_poly)
+
+pl <- ggtess3Q(q.matrix, pred_latlong[,2:3], map.polygon =  SCI_poly)
+
+#plot out admixture using the California boundaries for Santa Barbara county sf object from MEMgene   
+
+ancestry <- pl+
+  geom_sf(data = ca_tracts,lwd=1.5, fill=NA )+
+  geom_point(aes(x = Longitude, y = Latitude), data=pred_latlong, color="black")+
+  labs(title="Shared Ancestry Coefficients Accross Santa Cruz Island" )+
+  xlab("Longitude") + ylab("Latitude") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  coord_sf(ylim= c(33.9,34.1), xlim =c(-119.94, -119.5)) +
+   theme_few()
+
+```
+
+
+**105- MLPE **
+		Description: Estimate the impact of landscape features on neutral population structure using maximum likelihood of population effects with individual based genetic distances as the response, and environment distances that we have strong a priori hypotheses for regarding population structure in this system as the explanatory variables 
+		Associated data: environmental data of each sampling point including, elevation, mean temperature of warmest month, and difference of habitat composition, random effect matrix of individual comparisons to control for non-independence, individual based genetic distances (proportion of shared alleles and relatedness)
+		Results: Global model will be ranked using the Bayesian information criterion (BIC) to infer how gene flow is affected by landscape features, and which variables have the greatest impact on neutral genetic structure
+
+```{r eval=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+
+
+#first, need to construct a dataset with the pairwise genetic distances and resistances all in one place. 
+
+## Use topo dist package to calculate the null.euclidian distance between individuals while accounting for topography
+#read in raster file and plot to make sure it looks correct
+SCI_elev <- raster("C:/Users/Rebecca/Dropbox/GIS/elev_agg.tif")
+
+plot(SCI_elev)
+
+
+#use the locality data to calcualte the shortest topographic distance for each sampling location
+#Use the dataset that was used for circuitscape so the alternate ID is known 
+circut_data <- read.csv("C:/Users/Rebecca/Dropbox/ISSJ/issj_genomics/ISSJ_for_circutscape.csv") 
+
+
+latlongcoor_points<-SpatialPoints(cbind(circut_data$long,circut_data$lat), proj4string=CRS("+proj=longlat +ellps=WGS84 +datum=WGS84"))
+utmcoor_points<-spTransform(latlongcoor_points, CRS("+proj=utm +zone=11 ellps=WGS84"))
+
+utm_points <- cbind.data.frame(circut_data, utmcoor_points)
+
+
+utm_points <- utm_points %>% 
+  dplyr::select(-c(long, lat)) %>%
+  dplyr::rename("long"="coords.x1", "lat"="coords.x2")
+
+utm_points <-utm_points %>% 
+  dplyr::select(c(ID1,long, lat))
+
+
+#create pairwise points of all individuals 
+point_pairs_lat <- gather_pairs(data=utm_points, key=ID1, value=lat,  triangle = "both") %>% 
+  dplyr::rename("Start_y"=".y", "end_Y"=".x")
+  
+  
+point_pairs_long <- gather_pairs(data=utm_points, key=ID1, value=long,  triangle = "both") %>% 
+  dplyr::rename("Start_X"=".y", "end_X"=".x")
+
+#merge the two together 
+point_pairs <- merge(point_pairs_lat, point_pairs_long, by=c(".row",".col"))
+
+#write  csv so that I can get the pairwise lines in arcmap
+
+#write.csv(point_pairs, file="C:/Users/Rebecca/Dropbox/GIS/ISSJ_150_pairwise_points.csv", row.names=F)
+
+
+#calculate the topographic distance using the raster with elevation data this takes a long time to run
+#tdist <- topoDist(SCI_elev, circut_data[,3:4])
+
+
+
+#convert the pairwise topographic distance to a tibble and create a ID collumn
+tdist <- as_tibble(tdist) %>% 
+  rownames_to_column(var="ID1")
+
+#convert the wide data to long
+tdist_long <- melt(data= tdist, id="ID1") %>% 
+  rename("ID2"="variable") %>% 
+  rename("topo_dist"="value")
+
+
+# Convert the smouse genetic relatedness distance and proportion of shared alleles to long format
+testing <- as.matrix(issj.relatedness)
+
+relatedness_dist <- melt(as.matrix(issj.relatedness), varnames = c("ID1", "ID2")) %>% 
+  as.tibble() %>% 
+   rename("smouse_dist"="value")
+
+propshared_dist <- melt(as.matrix(issj.propshared.dist), varnames = c("ID1", "ID2")) %>% 
+  as.tibble() %>% 
+  rename("prop_shared"="value")
+
+#merge the two genetic relatedness datasets 
+
+genetic_dist <- merge(propshared_dist, relatedness_dist)
+
+
+#convert the individuals tissue IDs to match the ones from circuitscape
+#start with ID1 then delete the original tissue name and rename the alt ID for ID1
+genetic_dist<- left_join(genetic_dist, circut_data[,1:2], by="ID1") %>% 
+  dplyr::select(!"ID1") %>% 
+  rename("ID1"="AltID")
+
+#rename the circuit data to second ID
+circut_data2 <- circut_data %>% 
+  rename("ID2"="ID1") #then rename ID2 to ID1 to have the datasets merge again
+
+#merge the data again, this time by the second ID
+genetic_dist<- left_join(genetic_dist, circut_data2[,1:2], by="ID2") %>% 
+  dplyr::select(!"ID2") %>% 
+  rename("ID2"="AltID") 
+
+
+
+#load in results from circuitscape
+elev_resistance <- read.csv("C:/Users/Rebecca/Dropbox/ISSJ/issj_genomics/elev_resistance.csv") %>% 
+  rename("ID1"="ï..ID1")
+  
+evi8_resistance <- read.csv("C:/Users/Rebecca/Dropbox/ISSJ/issj_genomics/evi8_resistance.csv")%>% #from the inverted evi8 raster
+  rename("ID1"="ï..ID1")
+  
+mtwm_resistance <- read.csv("C:/Users/Rebecca/Dropbox/ISSJ/issj_genomics/mtwm_resistance.csv")%>% 
+  rename("ID1"="ï..ID1")
+
+mtwm_invert <- read.csv("C:/Users/Rebecca/Dropbox/ISSJ/issj_genomics/mtwm_invert_resistance.csv")%>% 
+  rename("ID1"="ï..ID1")
+    
+#merge the difference resistance layers from circuitscape 
+resistance_data <- merge(elev_resistance, evi8_resistance)
+
+resistance_data <- merge(resistance_data, mtwm_resistance)
+
+resistance_data <- merge(resistance_data, mtwm_invert)
+
+
+#Import the list of individuals that were removed during filtering in Radiator and 
+
+issj_filtered <- read.csv("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/issj_filtered.csv") %>% 
+  rename("ID1"="tissue_number")
+
+issj_filtered <- left_join(issj_filtered, circut_data) %>% 
+  dplyr::select("AltID") %>% 
+  rename("ID1"="AltID")
+
+issj_filtered2 <- issj_filtered%>% 
+  rename("ID2"="ID1")
+
+
+#remove the filtered individuals from the circuitscape comparisons 
+resistance_data<- anti_join(resistance_data, issj_filtered) #first ID collumn
+
+resistance_data<- anti_join(resistance_data, issj_filtered2) #second ID collumn
+
+
+
+#assign all individuals to the same popualtion so that a pairwise matrix can be made
+
+SCI_pop <- paste0(("1"))
+
+pred$pop1 <- as.factor(rep(SCI_pop, each=123)) 
+
+
+#gather pairwise pairs for each individual and the percent pine 
+data_pine <- pred %>% 
+  dplyr::select(c(tissue_number, percent_pine, pop1)) %>% 
+  transform(percent_pine = as.numeric(percent_pine))
+
+
+data_pairs_pine <- gather_pairs(data=data_pine, key=tissue_number, percent_pine, triangle = "both")
+
+#Calculate the absolute differnece between the percent pine between each pair of individuals and clean up
+data_pairs_pine$abs_pine_difference <- abs(data_pairs_pine$.x - data_pairs_pine$.y) 
+
+data_pairs_pine <- data_pairs_pine%>% 
+  rename("ID1"=".row") %>%
+  rename("ID2"=".col") %>% 
+  dplyr::select(! c("pop1",".x",".y")) %>% 
+  as_tibble() %>% 
+  ungroup()
+
+
+#convert the individuals tissue IDs to match the ones from circuitscape
+#start with ID1 then delete the original tissue name and rename the alt ID for ID1
+pine_diff <- left_join(data_pairs_pine, circut_data[,1:2], by="ID1")%>% 
+  dplyr::select(!"ID1") %>% 
+  rename("ID1"="AltID")
+
+
+#merge the data again, this time by the second ID
+pine_diff<- left_join(pine_diff, circut_data2[,1:2], by="ID2") %>% 
+  dplyr::select(!"ID2") %>% 
+  rename("ID2"="AltID")
+
+#need to retain all possible combinations so that nothing is filtered out of the resistance data so create a dataset with all the possible combinations  opposite  combination and merge it together 
+pine_diff_id <- pine_diff %>% 
+  tidyr::expand(crossing(ID1, ID2))
+
+#Join these 
+pine_diff_id <- left_join(pine_diff_id, pine_diff, by=c("ID1", "ID2"))
+
+
+#switch ID1 and ID2 names in pine differnece 
+pine_dif2 <- pine_diff %>% 
+  rename("ID.1"="ID1") %>% 
+  rename("ID.2"="ID2") %>% 
+   rename("ID2"="ID.1") %>% 
+  rename("ID1"="ID.2") 
+  
+#join to the big combination dataset 
+pine_diff_id <- left_join(pine_diff_id, pine_dif2, by=c("ID1", "ID2"))
+
+
+#Add in the data values from .y collumn in .x collumn is missing a value 
+pine_diff_id$abs_difference_pine <- ifelse(!is.na(pine_diff_id$abs_pine_difference.x),
+                                           pine_diff_id$abs_pine_difference.x, 
+                                           pine_diff_id$abs_pine_difference.y)
+
+pine_diff_id <- pine_diff_id %>% 
+  dplyr::select(!c("abs_pine_difference.x", "abs_pine_difference.y")) 
+
+
+
+#gather pairwise pairs for each individual and the percent oak
+data_oak <- pred %>% 
+  dplyr::select(c(tissue_number, percent_oak, pop1)) %>% 
+  transform(percent_oak = as.numeric(percent_oak))
+
+
+data_pairs_oak <- gather_pairs(data=data_oak, key=tissue_number, percent_oak, triangle = "both")
+
+#Calculate the absolute differnece between the percent oak between each pair of individuals and clean up
+data_pairs_oak$abs_oak_difference <- abs(data_pairs_oak$.x - data_pairs_oak$.y) 
+
+data_pairs_oak <- data_pairs_oak%>% 
+  rename("ID1"=".row") %>%
+  rename("ID2"=".col") %>% 
+  dplyr::select(! c("pop1",".x",".y")) %>% 
+  as_tibble() %>% 
+  ungroup()
+
+
+#convert the individuals tissue IDs to match the ones from circuitscape
+#start with ID1 then delete the original tissue name and rename the alt ID for ID1
+oak_diff <- left_join(data_pairs_oak, circut_data[,1:2], by="ID1")%>% 
+  dplyr::select(!"ID1") %>% 
+  rename("ID1"="AltID")
+
+
+#merge the data again, this time by the second ID
+oak_diff<- left_join(oak_diff, circut_data2[,1:2], by="ID2") %>% 
+  dplyr::select(!"ID2") %>% 
+  rename("ID2"="AltID")
+
+#need to retain all possible combinations so that nothing is filtered out of the resistance data so create a dataset with all the possible combinations  opposite  combination and merge it together 
+oak_diff_id <- oak_diff %>% 
+  tidyr::expand(crossing(ID1, ID2))
+
+#Join these 
+oak_diff_id <- left_join(oak_diff_id, oak_diff, by=c("ID1", "ID2"))
+
+
+#switch ID1 and ID2 names in oak differnece 
+oak_dif2 <- oak_diff %>% 
+  rename("ID.1"="ID1") %>% 
+  rename("ID.2"="ID2") %>% 
+   rename("ID2"="ID.1") %>% 
+  rename("ID1"="ID.2") 
+  
+#join to the big combination dataset 
+oak_diff_id <- left_join(oak_diff_id, oak_dif2, by=c("ID1", "ID2"))
+
+
+#Add in the data values from .y collumn in .x collumn is missing a value 
+oak_diff_id$abs_difference_oak <- ifelse(!is.na(oak_diff_id$abs_oak_difference.x),
+                                           oak_diff_id$abs_oak_difference.x, 
+                                           oak_diff_id$abs_oak_difference.y)
+
+oak_diff_id <- oak_diff_id %>% 
+  dplyr::select(!c("abs_oak_difference.x", "abs_oak_difference.y")) 
+
+
+
+
+
+
+######################################
+#merge all the datasets together
+
+
+resistance_data1 <- left_join(genetic_dist, pine_diff_id)
+
+resistance_data1 <- left_join(resistance_data1, oak_diff_id)
+
+#Merge with the topographic distance data 
+resistance_data1 <- merge(resistance_data1, tdist_long)
+
+
+#merge the genetic distance data to the resistance data 
+resistance_data <- merge(resistance_data, resistance_data1)
+
+#reorder so all the environemtnal variables are at the end of the dataframe 
+resistance_data <- resistance_data[c( "ID1","ID2","prop_shared","smouse_dist", "abs_difference_pine","abs_difference_oak","elev","evi8","mtwm","mtwm_invert","topo_dist")]
+
+
+
+resistance_data_st <- standardize(
+  resistance_data[,5:11],
+  robust = FALSE, suffix = "_standardized", append = TRUE)
+
+#merge the standardized values to original resistance datafile
+resistance_data <- cbind(resistance_data[,1:4], resistance_data_st)
+
+#write into a csv so the pre-assembled data can be uploaded 
+#write.csv(resistance_data, file="G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/ISSJ_resistance_data.csv", row.names=F)
+
+```
+
+```{r}
+
+######################
+#Checking coliniarity
+######################
+#looking at percent pine vs. oak relationship
+
+ggplot(aes(x=percent_pine, y=percent_oak), data=pred) +
+    geom_point(alpha=.3) +    
+    geom_smooth(method=lm, se=T, color="red")  +
+      labs(x="Percent Pine", y="Percent Oak")+
+    theme_few()
+
+
+#add evi8 values from raster since fogot to include both the invert and regular evi8 values. 
+evi8 <- read.csv("C:/Users/Rebecca/Dropbox/ISSJ/issj_genomics/evi8_values.csv")
+evi8_invert <- read.csv("C:/Users/Rebecca/Dropbox/GIS/evi8_invert.csv")
+
+evi8 <- evi8 %>% 
+  rename("ï..Latitude"="Latitude") 
+
+
+evi8 <- evi8 %>% 
+  round(digits = 4) #need to limit the number of digits otherwise it doesn't match correctly 
+
+evi8_invert <- evi8_invert %>% 
+ round(digits = 4)
+
+pred[,3:4] <- pred[,3:4] %>% 
+  round(digits = 4)
+
+
+test <- merge(pred, evi8, by=c("Latitude","Longitude"))
+test <-merge(test, evi8_invert, by=c("Latitude","Longitude"))
+
+#check to see how correlated the different raster layers are prior to running circutscape
+
+test <- test %>% 
+  dplyr::select(c("Longitude","percent_pine","percent_oak" ,"evi8", "evi8_invert", "elevation","mean_temp__warmest_month_deg_C"))
+
+#check correlation of individual variables 
+pairs.panels(test[,1:7], scale=T, method="pearson") #none of the varaibels are strongly correlated 
+
+usdm::vif(test) #all VIF values are below 3 
+
+
+#load resistance data
+#Predictor variables are already scaled: subtract mean, divide by standard deviation
+
+issj_resi <- read.csv("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/ISSJ_resistance_data.csv")
+
+##look at correlation between individual standardized variables
+pairs.panels(issj_resi[,c(12:13, 15, 16,18)]) #temperature resistance is correlated with evi8_invert and elevation
+cor(issj_resi[,c(12:13, 15, 16,18)])
+
+test <- issj_resi %>% 
+  dplyr::select("abs_difference_pine_standardized","abs_difference_oak_standardized","evi8_invert_standardized","mtwm_standardized","topo_dist_standardized")
+
+usdm::vif(test) #vif for topo dist is 10.55, but can't remove. elevation is 8, everything else is 
+
+##Check ssions
+
+#Regression plot: Dps
+
+resistance_data <- read.csv("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/ISSJ_resistance_data.csv")
+
+regression <- lm(formula = prop_shared ~ smouse_dist, data = resistance_data)
+
+plot(resistance_data$smouse_dist, resistance_data$prop_shared, xlab="", ylab="", main="Genetic Distance")+
+
+abline(regression, color="red")
+
+summary(regression)
+
+
+#Regression plots
+
+
+pine_reg <- ggplot(aes(x=abs_difference_pine, y=prop_shared), data=issj_resi) +
+    geom_point(alpha=.3) +   
+   scale_x_continuous()  +
+    geom_smooth(method=lm, se=T, color="red")  +
+      labs(x="Percent Pine", y="Proportion Shared")+
+    theme_few()
+
+
+
+oak_reg <- ggplot(aes(x=abs_difference_oak, y=prop_shared), data=issj_resi) +
+    geom_point(alpha=.3) +   
+   scale_x_continuous()  +
+    geom_smooth(method=lm, se=T, color="red")  +
+      labs(x="Percent Oak", y="Proportion Shared")+
+    theme_few()
+
+
+
+mtwm_reg <- ggplot(aes(x=mtwm, y=prop_shared), data=issj_resi) +
+    geom_point(alpha=.3) +   
+   scale_x_continuous()  +
+    geom_smooth(method=lm, se=T, color="red")  +
+      labs(x="Mean Temp Warmest Month", y="Proportion Shared")+
+    theme_few()
+
+
+
+
+topo_reg <- ggplot(aes(x=topo_dist, y=prop_shared), data=issj_resi) +
+    geom_point(alpha=.3) +   
+   scale_x_continuous()  +
+    geom_smooth(method=lm, se=T, color="red")  +
+      labs(x="Topo Distance", y="Proportion Shared")+
+    theme_few()
+
+
+evi8_reg <- ggplot(aes(x=evi8, y=prop_shared), data=issj_resi) +
+    geom_point(alpha=.3) +   
+   scale_x_continuous()  +
+    geom_smooth(method=lm, se=T, color="red")  +
+      labs(x="Vegitation Density (invert)", y="Proportion Shared")+
+    theme_few()
+
+
+
+elev_reg <- ggplot(aes(x=elev, y=prop_shared), data=issj_resi) +
+    geom_point(alpha=.3) +   
+   scale_x_continuous()  +
+    geom_smooth(method=lm, se=T, color="red")  +
+      labs(x="Elevation", y="Proportion Shared")+
+    theme_few()
+
+
+
+library(ggpubr)
+ggarrange(pine_reg, oak_reg, evi8_reg, mtwm_reg, elev_reg, topo_reg, nrow=3, ncol=2)
+
+
+```
+
+
+```{r}
+##################################################################
+#Running the MLPE
+#############################################################
+
+             
+#Full liberal model with the null topographic distance, temp, elevation, vegitation density,and difference in habitat composition
+
+
+#standardize the genetic distances so the beta coeficients are more applicable
+issj_resi_st <- standardize(
+  issj_resi[,3:4],
+  robust = FALSE, suffix = "_standardized", append = TRUE)
+
+
+#merge the standardized values to original resistance datafile
+issj_resi <- cbind(issj_resi, issj_resi_st[,3:4])
+
+
+#testing with proportion of shared alleles 
+issj.mod.1 <- lmer(prop_shared_standardized ~ topo_dist_standardized+ evi8_standardized+ abs_difference_pine_standardized + abs_difference_oak_standardized +(1|ID1), data = issj_resi, REML =TRUE)
+summary(issj.mod.1)
+
+options(na.action = "na.fail")
+
+
+# dredge all possible models, no REML to compare top models
+issj_mlpe_1 <- dredge(issj.mod.1, evaluate=T, rank="BIC", extra="R^2")
+# Model selection table 
+#       (Int) abs_dff_oak_stn abs_dff_pin_stn ev8_stn top_dst_stn    R^2 df    logLik     BIC  delta weight
+# 14 -0.02903         0.04680                 -0.1791      0.4666 0.2736  6 -9458.783 18971.1   0.00  0.781
+# 13 -0.03053                                 -0.1927      0.4777 0.2718  5 -9464.530 18973.7   2.57  0.216
+
+
+
+#testing with relatedness distance 
+issj.mod.2<- lmer(smouse_dist_standardized ~ topo_dist_standardized+ evi8_standardized+ abs_difference_pine_standardized + abs_difference_oak_standardized +(1|ID1), data = issj_resi, REML =TRUE)
+summary(issj.mod.2)
+
+issj_mlpe_2 <- dredge(issj.mod.2, evaluate=T, rank="BIC", extra="R^2")
+
+# Model selection table 
+#       (Int) abs_dff_oak_stn abs_dff_pin_stn  ev8_stn top_dst_stn    R^2 df     logLik     BIC   delta weight
+# 10 -0.01787         0.05028                               0.4279 0.2714  5  -9467.246 18979.1    0.00  0.658
+# 12 -0.01196         0.06564        -0.04142               0.4347 0.2728  6  -9463.569 18980.7    1.57  0.300
+# 9  -0.01880                                               0.4305 0.2693  4  -9474.582 18984.9    5.75  0.037
+
+
+#remove absolute difference in pine since it wasn't in top modles for proportion of shared alleles  
+issj.mod.3 <- lmer(prop_shared_standardized ~ topo_dist_standardized+ evi8_standardized+ abs_difference_oak_standardized +(1|ID1), data = issj_resi, REML =TRUE)
+summary(issj.mod.3)
+confint(issj.mod.3, level=0.95, method="Wald")
+
+
+issj_mlpe_3 <- dredge(issj.mod.3, evaluate=T, rank="BIC", extra="R^2")
+# Model selection table 
+#      (Int) abs_dff_oak_stn ev8_stn top_dst_stn    R^2 df    logLik     BIC  delta weight
+# 8 -0.02903         0.04680 -0.1791      0.4666 0.2736  6 -9458.783 18971.1   0.00  0.783
+# 7 -0.03053                 -0.1927      0.4777 0.2718  5 -9464.530 18973.7   2.57  0.217
+
+#remove vegitation denity since it wasn't in top model for relatedness 
+issj.mod.4<- lmer(smouse_dist_standardized ~  topo_dist_standardized+ abs_difference_pine_standardized + abs_difference_oak_standardized +(1|ID1), data=issj_resi, REML = TRUE)
+summary(issj.mod.4)
+confint(issj.mod.4, evel=0.95, method="Wald")
+
+issj_mlpe_4 <- dredge(issj.mod.4, evaluate=T, rank="BIC", extra="R^2")  
+# Model selection table 
+#       (Int) abs_dff_oak_stn abs_dff_pin_stn mtw_stn top_dst_stn    R^2 df     logLik     BIC   delta weight
+# 16 -0.02197         0.06137       -0.044150 -0.1509      0.5319 0.2783  7  -9438.248 18939.0    0.00  0.467
+# 14 -0.02805         0.04511                 -0.1482      0.5229 0.2767  6  -9442.962 18939.5    0.51  0.363
+# 13 -0.02924                                 -0.1537      0.5287 0.2750  5  -9448.187 18941.0    2.03  0.169
+
+
+```
+
+
+
+```{r eval=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+
+#make a general figure for difference between pine and oak individuals between pine and oak
+
+morph_data_all <- read.csv("C:/Users/Rebecca/Dropbox/ISSJ/ISSJ_Database_Master/Final_Data/ISSJ_Sampling_as_of_2Dec2019.csv")
+
+
+#remove clear outliers and select for just adults
+
+#cleaning up obvious outliers
+morph_data_all <- morph_data_all %>% 
+  dplyr::filter( bill_length_nares < 30) %>% 
+  dplyr::filter(bill_depth > 9)
+
+#subset just ASY birds#
+morph_data_all <- subset( morph_data_all, age == "ASY")
+
+
+#Filter out individuals with missing bill length nares 
+pheno <- morph_data_all[!is.na(morph_data_all$bill_length_nares),]
+
+pheno <-pheno[!is.na(pheno$tarsus1),]
+
+pheno <-pheno[!is.na(pheno$habitat),]
+
+
+#Calculate predicted bill length measurements based on body size using formula interface of prcomp. *** Have to use wing measurement because there are missing values of tarsus 
+
+pca_tarsus <- prcomp(~tarsus1, data=pheno, center=T, scale= T)
+
+axes_tarsus <- predict(pca_tarsus, newdata = pheno)
+
+
+##glm of length with body size correction
+glm_pheno <- cbind.data.frame(pheno, axes_tarsus)
+
+length_pheno <- lm(bill_length_nares~habitat + PC1, data=glm_pheno) 
+
+pheno$predict.bill.length <- predict(length_pheno)
+
+
+plot_morph <- ggplot(glm_pheno, aes(x=PC1, y=bill_length_nares, color=habitat)) +
+  geom_point() +
+  scale_color_manual(values=c("orange","forestgreen"))+
+  geom_smooth(method = lm)+
+  labs(title="Raw Bill Length Measurements Compared to Body Size (Adult Birds)",
+        x ="Body Size PC1 (Tarsus)", y = "Bill Length (mm)")+
+  theme_few()
+
+plot_morph
+```
+

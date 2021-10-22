@@ -1,0 +1,2528 @@
+nano ---
+title: "300-Identification_of_loci_Underlying_Variation_in_Morphology_beta"
+author: "Rebecca Cheek"
+date: "7/16/2020"
+output: html_document
+---
+
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+library(data.table)
+library(adegenet)
+library(ape)
+library("pegas")
+library("ggplot2")
+library("hierfstat")
+library(LEA)
+library(StAMPP)
+library(dplyr)
+library(tidyverse)
+library(RColorBrewer)
+library(mapplots)
+library(fields)
+library(stringr)
+library(pcadapt)
+library(qvalue)
+library(ggthemes)
+library(vegan)
+library(qqman)
+library(dartR)
+library(sf)
+library(lme4)
+library(psych)
+library(sp)
+library(parallel)
+library(ggrepel)
+library(vcfR)
+library(ggpubr)
+library(readr)
+library(naniar)
+library(biomaRt)
+library(mygene)
+```
+
+
+**Pre-processing** 
+
+Use SatsumaSynteny2 to align the Florida Scrub-jay scaffold to the Zebra Finch genome. This will allow us to get chromosomal level assignemnts of the scaffolds adnd positional information so that the Zebra Finch annotation can also be use to identify genes that are associate with loci flagged as under selection. 
+
+```{sh}
+#First, download the Blue55 isolate Zebra Finch genome from NCBI.  
+
+wget https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/008/822/105/GCF_008822105.2_bTaeGut2.pat.W.v2/GCF_008822105.2_bTaeGut2.pat.W.v2_genomic.fna.gz
+
+
+#Unzip the genomic file
+
+gunzip GCF_008822105.2_bTaeGut2.pat.W.v2_genomic.fna.gz
+
+# use the SplitFastaFile.py script to split the fasta file based on chromosomes name 
+# original available here:https://github.com/gouthamatla/fasta_File_Manipulation/blob/master/SplitFastaFile.py 
+'''
+Usage:
+python SplitFastaFile.py <inputFile.fa>
+'''
+
+import sys
+
+def getOutFileName(s): # {{{
+
+    s = s.replace("\\", "_")
+    s = s.replace("/", "_")
+    s = s.replace("*", "_")
+    s = s.replace("..", "_")
+    s = s.replace("?", "_")
+    s = s.replace(":", "_")
+    s = s.replace("[", "(")
+    s = s.replace("]", ")")
+    s = s.replace("P <=", "LE")
+    s = s.replace("<=", "LE")
+    s = s.replace("<", " LT")
+    s = s.replace(">=", "GE")
+    s = s.replace("|","_")
+    s = s.replace(" ","+")
+    s+=".fasta"
+
+    return s.strip()
+#}}}
+
+
+seq = ''
+
+for lines in open(sys.argv[1],'r'):
+        if (lines.startswith(">")):
+                id = lines
+                outFile = lines.strip().replace(">","")
+                outFile = open(getOutFileName(outFile), 'w')
+                outFile.write(str(lines))
+        if not (lines.startswith(">")):
+                outFile.write(str(lines))
+                
+                
+#merge all the "random" (unknown) segments into one file
+
+cat *_random*.fasta > Taeniopygia_guttata_isolate_Blue55_unknown.fasta
+
+```
+
+Run satsuma synteny on each chromosome individually. The installation can be done in conda or downloaded directly into your programs directory. However, you may have to edit the satsuma_run.sh to match your submission system if you download the source bianaries. Using conda it ran with the defaul local submission. 
+
+Here is an example using chromosome 4
+```{sh}
+
+
+!/bin/bash
+
+#SBATCH --job-name=satsuma_synteny
+#SBATCH --output=/scratch/summit/rgcheek@colostate.edu/reference_genome/satsuma/synteny_chr4.out
+#SBATCH --error=/scratch/summit/rgcheek@colostate.edu/reference_genome/satsuma/synteny_chr4.err
+#SBATCH --mail-user=Rebecca.G.Cheek@gmail.com
+#SBATCH --mail-type=END
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=10G
+#SBATCH --time=24:00:00
+
+source ~/.bashrc
+
+###activate conda environment
+conda activate bioinf
+
+###Identify program directories
+SATS2="/projects/rgcheek@colostate.edu/miniconda3/envs/bioinf/bin"
+
+##set path to Satsuma files
+export SATSUMA2_PATH=/projects/rgcheek@colostate.edu/miniconda3/envs/bioinf/bin
+
+REF=/scratch/summit/rgcheek@colostate.edu/reference_genome/ZEFI/ncbi-genomes-2019-10-28/ref_genome_split/chromosomes
+QUERY=/scratch/summit/rgcheek@colostate.edu/reference_genome/final.assembly.fasta
+OUT=/scratch/summit/rgcheek@colostate.edu/reference_genome/satsuma/synteny_chr4
+
+for chr in `ls $REF/*_chromosome_4__whole_genome_shotgun_sequence.fasta`
+do 
+$SATS2/SatsumaSynteny2 -q $QUERY -t $chr -o $OUT -slaves 2 -threads 10
+done
+
+```
+
+
+Note: depending on the chromosome there is a chance the program will fail to reach a consensus if you specify too many slaves and threads. If that happens, the program will fail to communicate with the slaves and will enter an endless iterration cycle. one solution is to either split the chromosome further, or remove the slaves and threads perameter and allow it to run with the defalt settings. 
+
+Merge the satsuma_chained.out filed from each chromosome into one file
+```{sh eval=FALSE, include=FALSE}
+#!/bin/bash
+
+#merging files .sh
+
+chr1=/scratch/summit/rgcheek@colostate.edu/reference_genome/satsuma/synteny_chr1/satsuma_summary.chained.out
+chr1A=/scratch/summit/rgcheek@colostate.edu/reference_genome/satsuma/synteny_chr1A/satsuma_summary.chained.out
+chr2=/scratch/summit/rgcheek@colostate.edu/reference_genome/satsuma/synteny_chr2/satsuma_summary.chained.out
+chr3=/scratch/summit/rgcheek@colostate.edu/reference_genome/satsuma/synteny_chr3/satsuma_summary.chained.out
+chr4=/scratch/summit/rgcheek@colostate.edu/reference_genome/satsuma/synteny_chr4/satsuma_summary.chained.out
+chr4A=/scratch/summit/rgcheek@colostate.edu/reference_genome/satsuma/synteny_chr4A/satsuma_summary.chained.out
+chr5=/scratch/summit/rgcheek@colostate.edu/reference_genome/satsuma/synteny_chr5/satsuma_summary.chained.out
+chr6=/scratch/summit/rgcheek@colostate.edu/reference_genome/satsuma/synteny_chr6/satsuma_summary.chained.out
+chr7=/scratch/summit/rgcheek@colostate.edu/reference_genome/satsuma/synteny_chr7/satsuma_summary.chained.out
+chr8=/scratch/summit/rgcheek@colostate.edu/reference_genome/satsuma/synteny_chr8/satsuma_summary.chained.out
+chr9=/scratch/summit/rgcheek@colostate.edu/reference_genome/satsuma/synteny_chr9/satsuma_summary.chained.out
+chr10=/scratch/summit/rgcheek@colostate.edu/reference_genome/satsuma/synteny_chr10/satsuma_summary.chained.out
+chr11=/scratch/summit/rgcheek@colostate.edu/reference_genome/satsuma/synteny_chr11/satsuma_summary.chained.out
+chr12=/scratch/summit/rgcheek@colostate.edu/reference_genome/satsuma/synteny_chr12/satsuma_summary.chained.out
+chr13=/scratch/summit/rgcheek@colostate.edu/reference_genome/satsuma/synteny_chr13/satsuma_summary.chained.out
+chr14=/scratch/summit/rgcheek@colostate.edu/reference_genome/satsuma/synteny_chr14/satsuma_summary.chained.out
+chr15=/scratch/summit/rgcheek@colostate.edu/reference_genome/satsuma/synteny_chr15/satsuma_summary.chained.out
+chr17=/scratch/summit/rgcheek@colostate.edu/reference_genome/satsuma/synteny_chr17/satsuma_summary.chained.out
+chr18=/scratch/summit/rgcheek@colostate.edu/reference_genome/satsuma/synteny_chr18/satsuma_summary.chained.out
+chr19=/scratch/summit/rgcheek@colostate.edu/reference_genome/satsuma/synteny_chr19/satsuma_summary.chained.out
+chr20=/scratch/summit/rgcheek@colostate.edu/reference_genome/satsuma/synteny_chr20/satsuma_summary.chained.out
+chr21=/scratch/summit/rgcheek@colostate.edu/reference_genome/satsuma/synteny_chr21/satsuma_summary.chained.out
+chr22=/scratch/summit/rgcheek@colostate.edu/reference_genome/satsuma/synteny_chr22/satsuma_summary.chained.out
+chr23=/scratch/summit/rgcheek@colostate.edu/reference_genome/satsuma/synteny_chr23/satsuma_summary.chained.out
+chr24=/scratch/summit/rgcheek@colostate.edu/reference_genome/satsuma/synteny_chr24/satsuma_summary.chained.out
+chr25=/scratch/summit/rgcheek@colostate.edu/reference_genome/satsuma/synteny_chr25/satsuma_summary.chained.out
+chr26=/scratch/summit/rgcheek@colostate.edu/reference_genome/satsuma/synteny_chr26/satsuma_summary.chained.out
+chr27=/scratch/summit/rgcheek@colostate.edu/reference_genome/satsuma/synteny_chr27/satsuma_summary.chained.out
+chr28=/scratch/summit/rgcheek@colostate.edu/reference_genome/satsuma/synteny_chr28/satsuma_summary.chained.out
+chrZ=/scratch/summit/rgcheek@colostate.edu/reference_genome/satsuma/synteny_chrZ/satsuma_summary.chained.out
+chrUN=/scratch/summit/rgcheek@colostate.edu/reference_genome/satsuma/random_out/satsuma_summary.chained.out
+
+
+
+cat $chr1 $chr1A $chr2 $chr3 $chr4 $chr4A $chr5 $chr6 $chr7 $chr8 $chr9 $chr10 $chr11 $chr12 \
+$chr13 $chr14 $chr15 $chr17 $chr18 $chr19 $chr20 $chr21 $chr22 $chr23 $chr24 $chr25 \
+$chr26 $chr27 $chr28 $chrUN $chrZ > /scratch/summit/rgcheek@colostate.edu/reference_genome/satsuma/satsuma_summary_all_chr.chained.out
+
+
+```
+
+Used the code in process_satsuma_assembledchroms.R to take the output from satsuma and reformat to include the positional information from the Zebra Finch genome and use it to reformat the positional information in the filtered VCF file. Then use Reorder_VCF_issj.R to merge the two so that scaffolds have Zebra Finch Chromosome and positional info. 
+
+Then took the new vcf with the chromosome information and imported it into snpEff: 
+*note* dropped Snpeff later on because it was not approprite for this data. If I had an annotated reference genome then maybe
+
+```{sh eval=FALSE, include=FALSE}
+
+#working from the snpEff directory
+#Note, snpEff installation is easy (just unzip the file), but needs to have an active conda environment with java installed to make it run
+
+#in the snpEff directory
+#Use snpEff to annotate VCF file to their pre-loaded zebra finch Genome
+
+
+java -Xmx4g -jar snpEff.jar taeGut3.2.4.75 ./ISSJ.ZF.ordered.vcf > ./ZEFI_ISSJ_ann/ISSJ.ZFannotation.vcf
+
+
+
+#note, you can also build your own database in SNPeff. I did so with the New Caledonia crow since it was the only corvid I could find as of 1X2020 with a chromosomal level genome and annotation
+# download the genome fasta and gff files from genbank with wget 
+
+#genome fasta 
+wget https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/009/650/955/GCF_009650955.1_bCorMon1.pri/GCF_009650955.1_bCorMon1.pri_genomic.fna.gz
+
+#gff annotation
+
+wget https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/009/650/955/GCF_009650955.1_bCorMon1.pri/GCF_009650955.1_bCorMon1.pri_genomic.gff.gz
+
+
+#Unzip both files with gunzip
+#the annotation has to be "genes.gff"
+#the reference has to be "sequences.fa"
+
+#put both files into a new folder in the snpeff/data directory. 
+mkdir Corvus_moneduloides 
+
+#then edit the snpeff.config file by adding the line 
+Corvus_moneduloides.genome:  Corvus_moneduloides 
+
+#then build database by running this line from the snpEff directory
+
+java -jar snpEff.jar build -gff3 -v Corvus_moneduloides
+
+
+#then can try re-doing the annotation with the New Caledonia data
+java -Xmx4g -jar snpEff.jar Corvus_moneduloides ./ISSJ.ZF.ordered.vcf > ./ZEFI_ISSJ_ann/ISSJ.NCCannotation.vcf
+
+
+```
+
+Of the 3409 SNPs that were in the final Radiator filtered dataset, 3345 of them were assigned to the Zebra Finch genome.
+
+302- GWAS_GEMMA
+		Description: Multivariate GWAS that incorporates kinship, implemented in the shell 
+		Associated data: Bill morphology data, in this case body size corrected measures for bill length. Complete SNP matrix.  
+		Figures & Results: Multiple loci flagged across the genome as under selection
+
+
+note, GEMMA can recognize the phenotype as a regular text file, and can read bed files instead of geno.txt. So can output phenotypes as a txt file and use that in GEMMA
+
+First, we want to be determine if an linear mixed model is the best option since it could be that bill length is controlled by many snps of small effect or a few SNPs of large effect. In the case of a polygenic basis, a lmm is more appropriate since the effect size is normally distributed. If bill length is instead controlled by a few loci and a small proportion of the variants affect phenotype then a Baysian veriable selecton regression model may be more effective. GEMMA has an option to run a bslmm which is a basian sparse regression model that is a mix of both a lmm and a Bvsr to test which approach may be more effective at detecting loci associated with the given phenotype. 
+
+
+
+```{sh}
+#working from snpEff/imputed_data file directory 
+# compute Kinship matrix
+#output is automatically genetated in an "output" folder if you don't provide one
+gemma -bfile ./imputed_data/ISSJ.ZF.ordered_imputed_BEAGLE -p ./issj_bill_length_pheno.txt  -miss .05 -gk -o ./ISSJ.ZF.ordered_imputed_BEAGLE
+    
+#in case you want a standardized relatedness matrix
+gemma -bfile ./imputed_data/ISSJ.ZF.ordered_imputed_BEAGLE -p ./issj_bill_length_pheno.txt  -miss .05 -gk 2 -o ./ISSJ_standardized_relatedness
+
+#!/bin/bash
+
+#### SETUP INPUT FILES
+## Copy this script in to folder with executable GEMMA
+## Make sure you have copied all of the input files into this folder as well
+
+#Phenotype FILES
+#note, GEMMA can recognize the phenotype as a regular text file, 
+#and can read bed files instead of geno.txt. So can output phenotypes as a txt file and use that in GEMMA
+
+
+## Kinship matrix
+# ISSJ.ZF.ordered_imputed.cXX.txt
+
+## Genotype data
+# PLINK .bed,.bim,.fam files with suffix ISSJ.ZF.ordered_imputed_BEAGLE
+
+## Modifiers for bslmm command 
+# bslmm = 1 --> BSLMM -- USE THIS!
+# bslmm = 2 --> standard ridge regression/GBLUP
+# bslmm = 3 --> probit BSLMM (requires 0/1 phenotypes)
+
+## Parameters adjustments
+# Set BURNIN=250000 # No MCMC initial steps to be discarded (suggested: 10-25% MCCMC length)
+# Set RECORDPACE=100 # Record states every X steps
+# use other default settings
+
+#### RUN ANALYSIS: Use BSLMM on size-corrected bill (Zhou et al. 2013)
+gemma -bfile ./ISSJ.ZF.ordered_imputed_BEAGLE -p ./issj_bill_length_pheno.txt -k ../ISSJ.ZF.ordered_imputed_BEAGLE.cXX.txt -bslmm 1 -w 250,000 -rpace 100 -o bslmm_issj_bill
+
+#copy over the output to local directory and check in R
+
+
+```
+
+
+check the bslmm output 
+using the tutorial availbe here (http://romainvilloutreix.alwaysdata.net/romainvilloutreix/wp-content/uploads/2017/01/gwas_gemma-2017-01-17.pdf)
+
+```{r}
+# Load hyperparameters
+
+hyp.params <- read.table("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/Filtered_Data/bslmm-output/bslmm_issj_bill.hyp.txt",header=T)
+
+# Get mean, median, and 95% ETPI of hyperparameters
+# h-> approximation to proportion of phenotypic variance
+# explained by variants (PVE)
+
+
+# Get mean, median, and 95% ETPI of hyperparameters
+# ========================================================================
+# h-> approximation to proportion of phenotypic variance
+# explained by variants (PVE)
+h<-c("h",mean(hyp.params$h),quantile(hyp.params$h, probs=c(0.5,0.025,0.975)))
+# pve -> PVE
+pve<-c("PVE", mean(hyp.params$pve),quantile(hyp.params$pve,
+probs=c(0.5,0.025,0.975)))
+# rho-> approximation to proportion of genetic variance explained by variants
+# with major effect (PGE)
+# rho=0 -> pure LMM, highly polygenic basis
+# rho=1 -> pure BVSR, few major effect loci
+rho<-c("rho",mean(hyp.params$rho),quantile(hyp.params$rho, probs=c(0.5,0.025,0.975)))
+# pge -> PGE
+pge<-c("PGE",mean(hyp.params$pge),quantile(hyp.params$pge, probs=c(0.5,0.025,0.975)))
+# pi -> proportion of variants with non-zero effects
+pi<-c("pi",mean(hyp.params$pi),quantile(hyp.params$pi, probs=c(0.5,0.025,0.975)))
+# n.gamma -> number of variants with major effect
+n.gamma<-c("n.gamma",mean(hyp.params$n_gamma),quantile(hyp.params$n_gamma,
+probs=c(0.5,0.025,0.975)))
+# ==============================================================================
+
+
+# get table of hyperparameters and save it to a file
+# ==============================================================================
+hyp.params.table<-as.data.frame(rbind(h,pve,rho,pge,pi,n.gamma),row.names=F)
+colnames(hyp.params.table)<-c("hyperparam", "mean","median","2.5%", "97.5%")
+# show table
+hyp.params.table
+
+# get table of hyperparameters and save it to a file
+# ==============================================================================
+hyp.params.table<-as.data.frame(rbind(h,pve,rho,pge,pi,n.gamma),row.names=F)
+colnames(hyp.params.table)<-c("hyperparam", "mean","median","2.5%", "97.5%")
+# show table
+hyp.params.table
+
+# plot traces and distributions of hyperparameters
+# ==============================================================================
+# set up layout
+layout(matrix(c(1,1,2,3), 2, 2, byrow = TRUE))
+# h
+# ------------------------------------------------------------------------------
+plot(hyp.params$h, type="l", ylab="h", main="h")
+hist(hyp.params$h, main="", xlab="h")
+plot(density(hyp.params$h), main="", xlab="h")
+# ------------------------------------------------------------------------------
+# PVE
+# ------------------------------------------------------------------------------
+plot(hyp.params$pve, type="l", ylab="PVE", main="PVE")
+hist(hyp.params$pve, main="", xlab="PVE")
+plot(density(hyp.params$pve), main="", xlab="PVE")
+# ------------------------------------------------------------------------------
+# rho
+# ------------------------------------------------------------------------------
+plot(hyp.params$rho, type="l", ylab="rho", main="rho")
+hist(hyp.params$rho, main="", xlab="rho")
+plot(density(hyp.params$rho), main="", xlab="rho")
+# ------------------------------------------------------------------------------
+
+# PGE
+# ------------------------------------------------------------------------------
+plot(hyp.params$pge, type="l", ylab="PGE", main="PGE")
+hist(hyp.params$pge, main="", xlab="PGE")
+plot(density(hyp.params$pge), main="", xlab="PGE")
+# ------------------------------------------------------------------------------
+# pi
+# ------------------------------------------------------------------------------
+plot(hyp.params$pi, type="l", ylab="pi", main="pi")
+hist(hyp.params$pi, main="", xlab="pi")
+plot(density(hyp.params$pi), main="", xlab="pi")
+# ------------------------------------------------------------------------------
+# No gamma
+# ------------------------------------------------------------------------------
+plot(hyp.params$n_gamma, type="l", ylab="No gamma", main="No gamma")
+hist(hyp.params$n_gamma, main="No gamma", xlab="No gamma")
+plot(density(hyp.params$n_gamma), main="No gamma", xlab="No gamma")
+# ------------------------------------------------------------------------------
+# ==============================================================================
+
+
+
+
+h<-c("h",mean(hyp.params$h),quantile(hyp.params$h, probs=c(0.5,0.025,0.975)))
+
+# pve -> PVE
+pve<-c("PVE", mean(hyp.params$pve),quantile(hyp.params$pve,
+probs=c(0.5,0.025,0.975)))
+
+# rho-> approximation to proportion of genetic variance explained by variants
+# with major effect (PGE)
+# rho=0 -> pure LMM, highly polygenic basis
+# rho=1 -> pure BVSR, few major effect loci
+
+rho<-c("rho",mean(hyp.params$rho),quantile(hyp.params$rho, probs=c(0.5,0.025,0.975)))
+
+# pge -> PGE
+pge<-c("PGE",mean(hyp.params$pge),quantile(hyp.params$pge, probs=c(0.5,0.025,0.975)))
+
+# pi -> proportion of variants with non-zero effects
+pi<-c("pi",mean(hyp.params$pi),quantile(hyp.params$pi, probs=c(0.5,0.025,0.975)))
+
+# n.gamma -> number of variants with major effect
+n.gamma<-c("n.gamma",mean(hyp.params$n_gamma),quantile(hyp.params$n_gamma,
+probs=c(0.5,0.025,0.975)))
+
+# get table of hyperparameters and save it to a file
+
+hyp.params.table<-as.data.frame(rbind(h,pve,rho,pge,pi,n.gamma),row.names=F)
+colnames(hyp.params.table)<-c("hyperparam", "mean","median","2.5%", "97.5%")
+# show table
+
+hyp.params.table
+# write table to file
+#write.table(hyp.params.table, file="G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/Filtered_Data/bslmm-output/hyperparameters.dsv", sep="\t", quote=F)
+
+# plot traces and distributions of hyperparameters
+# set up layout
+layout(matrix(c(1,1,2,3), 2, 2, byrow = TRUE))
+
+
+# summarize it all in a pdf
+# ==============================================================================
+pdf(file="G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/Filtered_Data/bslmm-output/hyperparameters.pdf", width=8.3,height=11.7)
+layout(matrix(c(1,1,2,3,4,4,5,6), 4, 2, byrow = TRUE))
+# h
+# ------------------------------------------------------------------------------
+plot(hyp.params$h, type="l", ylab="h", main="h - trace")
+hist(hyp.params$h, main="h - posterior distribution", xlab="h")
+plot(density(hyp.params$h), main="h - posterior distribution", xlab="h")
+# ------------------------------------------------------------------------------
+# PVE
+# ------------------------------------------------------------------------------
+plot(hyp.params$pve, type="l", ylab="PVE", main="PVE - trace")
+hist(hyp.params$pve, main="PVE - posterior distribution", xlab="PVE")
+plot(density(hyp.params$pve), main="PVE - posterior distribution", xlab="PVE")
+# ------------------------------------------------------------------------------
+# rho
+# ------------------------------------------------------------------------------
+plot(hyp.params$rho, type="l", ylab="rho", main="rho - trace")
+hist(hyp.params$rho, main="rho - posterior distribution", xlab="rho")
+plot(density(hyp.params$rho), main="rho - posterior distribution", xlab="rho")
+# ------------------------------------------------------------------------------
+# PGE
+# ------------------------------------------------------------------------------
+plot(hyp.params$pge, type="l", ylab="PGE", main="PGE - trace")
+hist(hyp.params$pge, main="PGE - posterior distribution", xlab="PGE")
+plot(density(hyp.params$pge), main="PGE - posterior distribution", xlab="PGE")
+# ------------------------------------------------------------------------------
+# pi
+# ------------------------------------------------------------------------------
+plot(hyp.params$pi, type="l", ylab="pi", main="pi")
+hist(hyp.params$pi, main="pi", xlab="pi")
+plot(density(hyp.params$pi), main="pi", xlab="pi")
+# ------------------------------------------------------------------------------
+# No gamma
+# ------------------------------------------------------------------------------
+plot(hyp.params$n_gamma, type="l", ylab="n_gamma", main="n_gamma - trace")
+hist(hyp.params$n_gamma, main="n_gamma - posterior distribution", xlab="n_gamma")
+plot(density(hyp.params$pi), main="n_gamma - posterior distribution", xlab="n_gamma")
+# ------------------------------------------------------------------------------
+dev.off()
+# ==============================================================================
+
+
+# library to speed up loading of big tables
+library(data.table)
+# Load parameters
+# ========================================================================
+params<-as.data.frame(fread("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/Filtered_Data/bslmm-output/bslmm_issj_bill.param.txt",header=T,sep="\t"))
+# ========================================================================
+# Get variants with sparse effect size on phenotypes
+# ==============================================================================
+# add sparse effect size (= beta * gamma) to data frame
+params["eff"]<-abs(params$beta*params$gamma)
+# get variants with effect size > 0
+params.effects<-params[params$eff>0,]
+# show number of variants with measurable effect
+nrow(params.effects)
+
+
+# sort by decreasing effect size
+params.effects.sort<-params.effects[order(-params.effects$eff),]
+
+
+
+# show top 10 variants with highest effect
+head(params.effects.sort, 10)
+
+
+
+# variants with the highest sparse effects
+# ------------------------------------------------------------------------
+# top 1% variants (above 99% quantile)
+top1<-
+params.effects.sort[params.effects.sort$eff>quantile(params.effects.sort$eff,0.99),]
+# top 0.1% variants (above 99.9% quantile)
+top01<-
+params.effects.sort[params.effects.sort$eff>quantile(params.effects.sort$eff,0.999),]
+# top 0.01% variants (above 99.99% quantile)
+top001<-
+params.effects.sort[params.effects.sort$eff>quantile(params.effects.sort$eff,0.9999),]
+# ------------------------------------------------------------------------
+# write tables
+write.table(top1, file="G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/Filtered_Data/bslmm-output/top1eff.dsv", quote=F, row.names=F, sep="\t")
+write.table(top01, file="G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/Filtered_Data/bslmm-output/top0.1eff.dsv", quote=F, row.names=F, sep="\t")
+write.table(top001, file="G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/Filtered_Data/bslmm-output/top0.01eff.dsv", quote=F, row.names=F, sep="\t")
+# =======================================================================
+
+
+
+# Get variants with high Posterior Inclusion Probability (PIP) == gamma
+# ==============================================================================
+# PIP is the frequency a variant is estimated to have a sparse effect in the MCMC
+# (the number of times it appears in the MCMC with a non-zero sparse effect)
+# sort variants by descending PIP
+params.pipsort<-params[order(-params$gamma),]
+# Show top 10 variants with highest PIP
+head(params.pipsort,10)
+
+# sets of variants above a certain threshold
+# variants with effect in 1% MCMC samples or more
+pip01<-params.pipsort[params.pipsort$gamma>=0.01,]
+# variants with effect in 10% MCMC samples or more
+pip10<-params.pipsort[params.pipsort$gamma>=0.10,]
+# variants with effect in 25% MCMC samples or more
+pip25<-params.pipsort[params.pipsort$gamma>=0.25,]
+# variants with effect in 50% MCMC samples or more
+pip50<-params.pipsort[params.pipsort$gamma>=0.50,]
+# write tables
+write.table(pip01, file="G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/Filtered_Data/bslmm-output/pip01.dsv", quote=F, row.names=F, sep="\t")
+write.table(pip10, file="G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/Filtered_Data/bslmm-output/pip10.dsv", quote=F, row.names=F, sep="\t")
+write.table(pip25, file="G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/Filtered_Data/bslmm-output/pip25.dsv", quote=F, row.names=F, sep="\t")
+write.table(pip50, file="G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/Filtered_Data/bslmm-output/pip50.dsv", quote=F, row.names=F, sep="\t")
+# ------------------------------------------------------------------------------
+
+# plot variants PIPs across linkage groups/chromosomes
+# ==============================================================================
+# Prepare data
+# ------------------------------------------------------------------------------
+# add linkage group column (chr)
+chr<-gsub("lg|_.+","",params$rs)
+params["chr"]<-chr
+# sort by linkage group and position
+params.sort<-params[order(as.numeric(params$chr), params$rs),]
+# get list of linkage groups/chromosomes
+chrs<-sort(as.numeric(unique(chr)))
+# ------------------------------------------------------------------------------
+
+
+
+
+# Plot to a png file because the number of dots is very high
+# drawing this kind of plot over the network is very slow
+# also opening vectorial files with many objects is slow
+# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+png(file="G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/Filtered_Data/bslmm-output/pip_plot.png", width=11.7,height=8.3,units="in",res=200)
+# set up empty plot
+plot(-1,-1,xlim=c(0,nrow(params.sort)),ylim=c(0,1),ylab="PIP",xlab="linkage group",
+xaxt="n")
+
+# plot grey bands for chromosome/linkage groups
+# ------------------------------------------------------------------------------
+chrs<-sort(as.numeric(unique(chr)))
+start<-1
+lab.pos<-vector()
+for (ch in chrs){
+size<-nrow(params.sort[params.sort$chr==ch,])
+cat ("CH: ", ch, "\n")
+colour<-"light grey"
+if (ch%%2 > 0){
+polygon(c(start,start,start+size,start+size,start), c(0,1,1,0,0), col=colour,
+border=colour)
+}
+cat("CHR: ", ch, " variants: ", size, "(total: ", (start+size), ")\n")
+txtpos<-start+size/2
+lab.pos<-c(lab.pos, txtpos)
+start<-start+size
+}
+# Add variants outside linkage groups
+chrs<-c(chrs,"NA")
+size<-nrow(params.sort[params.sort$chr=="NA",])
+lab.pos<-c(lab.pos, start+size/2)
+# ------------------------------------------------------------------------------
+# Add x axis labels
+axis(side=1,at=lab.pos,labels=chrs,tick=F)
+
+
+# plot PIP for all variants
+# ------------------------------------------------------------------------------
+# rank of variants across linkage groups
+x<-seq(1,length(params.sort$gamma),1)
+# PIP
+y<-params.sort$gamma
+# sparse effect size, used for dot size
+z<-params.sort$eff
+# log-transform to enhance visibility
+z[z==0]<-0.00000000001
+z<-1/abs(log(z))
+# plot
+symbols(x,y,circles=z, bg="black",inches=1/5, fg=NULL,add=T)
+# ------------------------------------------------------------------------------
+
+
+
+# highligh high PIP variants (PIP>=0.25)
+# ------------------------------------------------------------------------------
+# plot threshold line
+abline(h=0.25,lty=3,col="dark grey")
+# rank of high PIP variants across linkage groups
+x<-match(params.sort$gamma[params.sort$gamma>=0.25],params.sort$gamma)
+# PIP
+y<-params.sort$gamma[params.sort$gamma>=0.25]
+# sparse effect size, used for dot size
+z<-params.sort$eff[params.sort$gamma>=0.25]
+z<-1/abs(log(z))
+symbols(x,y,circles=z, bg="red",inches=1/5,fg=NULL,add=T)
+# ------------------------------------------------------------------------------
+# add label high PIP variants
+text(x,y,labels=params.sort$rs[params.sort$gamma>=0.25], adj=c(0,0), cex=0.5)
+# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# close device
+dev.off()
+# ==============================================================================
+# This is to be done outside the current R session. Launch another interactive session
+# in Iceberg and execute:
+#$ display -resize 1920x1080 output/pip_plot.png
+
+```
+
+
+hyperparam  mean              median               2.5%         97.5%
+h	        0.8529641413	      0.8812459     	0.5532420425    	0.9983435525
+PVE	      0.6688215719	      0.6650802     	0.3241193	        0.9952312075
+rho     	0.83221487474	      0.8624403	      0.5243253775    	0.99177004
+PGE	      0.55715500225	      0.525328      	0.2879147075    	0.94326262
+pi	      0.00056107298292  	0.00046180415 	0.0003040906775 	0.001426520175
+n.gamma  	1.5697
+
+
+So this is interesting. Basically what the bslmm results are showing based on the rho and gamma is that a lot of the significant varaition in the model can be attributed to basically 1 SNP, which is pretty suspicious. However, there are some lower effect loci that may also have a smaller effect since the pi value shows that as many as 40 SNPs could have a non-zero effect. 
+There is also conflicting evidence in the literature that bill morphology is polygenic, or can be controlled by a few genes of large effect like in Darwin's Finches. 
+
+So what we will do, is run lmm in GEMMA which assumes all loci have an effect on phenotype, and acknowlege that the result may be biased by these large effect loci. We will then back up these results with the RDA which doens't make any assumptions on the genetic basis of the trait.  
+
+```{sh}
+#to fit a linear mixed model:
+gemma -bfile ./imputed_data/ISSJ.ZF.ordered_imputed_BEAGLE  -p ./issj_bill_length_pheno.txt -k ./output/ISSJ.ZF.ordered_imputed_BEAGLE.cXX.txt -lmm 1 -n 1 -o GWAS
+        
+#This is identical to the univariate linear mixed model association test, except that an ”-n ”  
+#option is employed to specify which phenotypes in the phenotype file are used for association tests. 
+
+
+
+#There will be two output files, both inside an output folder in the current directory. The prefix.log.txt file contains some detailed information about the running parameters and computation
+#time. In addition, prefix.log.txt contains genetic correlations estimates and their standard errors
+#in the null multivariate linear mixed model.
+#The prefix.assoc.txt contains the results. The number of columns will depend on the number of phenotypes
+#used for analysis. The first few columns are: chromosome numbers, snp ids, base pair positions
+#on the chromosome, number of missing values for a given snp, minor allele, major allele and allele
+#frequency. The last column contains p values from the association tests. The middle columns
+#contain beta estimates and the variance matrix for these estimates.
+
+```
+
+
+To get the annotation information for each of the outliers flagged by GEMMA, we will use bedops to search for genes near each region contaning outlier snps. Because we already have the positional information on our VCF of where each locus falls in the Zebra finch genome we can use that for bedops and skip having to BLAST everything. For bedops, we need to the start and end position for each contig containing a SNP flagged by GEMMA and the RDA. Each read was 95 bp long, but we also removed any snnps that were past the 88 bp position, so we will add 88 to each POS (start position of the vcf) to get our end position. We can then query that in bedops and tell it to search for any genes within 50 kb of that region. Looking at LD plots from VCFtools using the imputed data of 3345 loci, it looks like we can query 50 kb and still have high correlation between snps. Past 75 there is evidence of decay. Within 50 also seems reasonable looking at LD in the raw data as well.  
+
+```{sh}
+
+# Use this script and adjust ld window to see how corelated snps are within 25, 50, and 100 kb 
+#check LD using the imputed dataset form BEAGLE
+
+vcftools --vcf ./ISSJ.ZF.ordered_imputed_BEAGLE.vcf --ld-window-bp 100000 --max-alleles 2 --min-alleles 2 --geno-r2 --out ./link100
+
+```
+
+
+```{r}
+
+#plot the LD with R2 correlations on y and bp on x
+
+plotDecayLD <- function(dfr, chr, xlim=c(NA,NA),ylim=c(NA,NA),avgwin=0,minr2) {
+  if(missing(dfr)) stop("Input data.frame 'dfr' missing.")
+  
+  if(!missing(chr)) {
+    ld <- filter(ld,CHROM_A==get("chr") & CHROM_B==get("chr"))
+  }
+  
+  if(!missing(minr2)) {
+    ld <- filter(ld,ld$R2>get("minr2"))
+  }
+  
+  ld <- ld %>% arrange(R2)
+  
+  ld$dist <- ld$DISTANCE
+  
+  if(avgwin>0) {
+    ld$distc <- cut(ld$dist, breaks=seq(from=min(ld$dist),to=max(ld$dist),by=avgwin))
+    ld <- ld %>% group_by(distc) %>% summarise(dist=mean(dist),R2=mean(R2))
+  }
+  
+  ggplot(ld,aes(x=dist,y=R2))+
+    geom_point(shape=20,size=0.15,alpha=0.7)+
+    geom_smooth(method = "lm", formula = y ~ poly(x, 2))+
+    scale_x_continuous(limits=xlim)+
+    scale_y_continuous(limits=ylim)+
+    labs(x="Distance (Bases)",y=expression(LD~(r^{2})))+
+    theme_bw(base_size=14)+
+    theme(panel.border=element_blank(),
+          axis.ticks=element_blank()) +
+    geom_vline(xintercept=25000, color="red", linetype="dashed", size=1) %>%
+    return()
+}
+
+
+ld <- read.delim("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/Filtered_Data/LD_estimates_imputed_data/link100.geno.ld")
+
+ld$DISTANCE <- ld$POS2-ld$POS1
+
+ld<- ld %>% 
+ dplyr::rename("R2"="R.2",
+         "CHROM_A"="CHR")
+
+
+ld$CHROM_B <- ld$CHROM_A
+
+ld <- ld %>% 
+  dplyr::select(c("R2","CHROM_A", "CHROM_B", "DISTANCE" ))
+
+
+plotDecayLD(ld , minr2=0.25 )
+
+```
+
+
+
+```{r}
+#Load the GWAS results from GEMMA
+
+ISSJgwas <- as_tibble(read.delim("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/gwas_results/Beagle_imputed_GWAS.assoc.txt", header=T))
+
+ISSJgwas <- ISSJgwas %>% 
+   dplyr::rename("pvalue"="p_wald")
+
+#FDR control algorithms relies on the fact that significance values (P-values) corresponding
+#to truly null hypotheses, i.e., selectively neutral loci, are uniformly distributed over the interval (0, 1)
+
+ggplot(ISSJgwas, aes(x=pvalue)) +
+  geom_histogram(binwidth=.05)
+#Looks pretty flat. Will proceed with FDR correction
+
+# Use p-value correction for multiple tests 
+ISSJgwas$pvalue.adj <- p.adjust(ISSJgwas$pvalue, "fdr", n = length(ISSJgwas$pvalue))
+
+
+#Split so the snp name matches the output from RDA 
+#make a new df
+foo <- data.frame(do.call('rbind', strsplit(as.character(ISSJgwas$rs),'_',fixed=TRUE)))
+
+#select jus tthe first collumn which should be the snp name 
+foo$snp <-foo$X1
+
+#Select just the snp name and replace the snp name from RDA
+foo <- foo %>% 
+  dplyr::select(c("snp"))
+
+foo$snp <- as.character(foo$snp)
+
+ISSJgwas$snp <- foo$snp
+
+
+
+#first, change the name of the position collumn from the gwas output to match the annotated vcf information
+ISSJgwas <- ISSJgwas %>% 
+  rename("ps"="ZFPOS") 
+
+
+# option to merge the gwas results with the annotation information from SNPEff
+#GEMMA_ann <- merge(ISSJgwas, zefi_ann, by = "POS", keep_all=F)
+
+#set our alpha for 0.05
+alpha <-0.05
+
+#Filter down to just outliers 
+#for the adjusted p-values
+outliersnares.adj <-ISSJgwas %>% 
+  filter(ISSJgwas$pvalue.adj<alpha)
+
+#7 outliers
+
+
+#Add 88 to each of the positions to get a range 
+
+outliersnares.adj$POS_end <- outliersnares.adj$ZFPOS + 88 
+
+
+#select for just the chromosome start and end collumns 
+
+outliersnares.bedops <- outliersnares.adj %>% 
+  dplyr::select(c("chr","ZFPOS","POS_end"))
+
+
+#change the name in ZFCHROM so it can be read in by bedops
+outliersnares.bedops$chr <- gsub("Chr_*","chr",outliersnares.adj$chr) 
+
+#write tab deliminated file with chromosome, start, and end position. To see if anything interesting pops up in bedops
+#write.table(outliersnares.bedops, file="G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/gwas_results/GWAS.ann.txt", sep = "\t", row.names = FALSE, col.names = F, quote = F)
+
+
+
+```
+
+
+
+#option to extract coordinates from Florida Scrub-jay to then blast the straight Fasta Sequeunces to the Zebra Finch. 
+```{r}
+#merge the outliers with the FLSJ coordintes 
+
+ZEFIcor <- read.csv("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/Filtered_Data/ISSJ.ZFcorr.csv")
+
+pos.info <-left_join(outliersnares.adj, ZEFIcor, by="ZFPOS")
+
+
+#Subtract and add 25000 from the position to get range to extract from genomic fasta to be used for blast searching. this should select for regions around each snp that are from the same linkage group according to chavirra-pizarro 2019
+pos.info$pos.min <- pos.info$POS-25000 
+pos.info$pos.min[pos.info$pos.min<0] <- 0 #convert negative valuse to zero so it'll just be the start of the file
+
+pos.info$pos.max <- pos.info$POS+25000 
+
+#make a new collumn that merges the range values
+pos.info$pos.range <- paste(pos.info$pos.min,pos.info$pos.max, sep="-")
+
+pos.info$sca.snp <- paste(pos.info$CHROM,pos.info$snp, sep=".")
+
+#write a text file with the snp name and position range 
+pos.info$fasta.range <- paste(pos.info$CHROM, pos.info$pos.range, sep=":")
+
+
+blast.info <- as_tibble(pos.info$fasta.range)
+
+# add a backslash to the end of the collumns 
+
+blast.info <- as_tibble(paste(blast.info$value, " \\"))
+ 
+#write csv and then copy paste informaiton into Gemma_snps_fasta.sh below
+#write_csv(blast.info, "G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/Filtered_Data/ISSJ.BLAST.fasta.coor.csv", quote=F, col_names=F)
+
+
+
+#write csv of results to see if anything interesting pops up by quering gene names in NCBI and/or using the table of genes known to affect bill morphology in Chapter 1 outline
+#write.csv(outliersnares, file="G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/gwas_results/GWAS.ann.csv")
+
+
+```
+
+
+
+303-GWAS_RDA
+		Description: Identify loci associated with bill morphology using partial RDA to correct for population structure related to geographic distance and flag outlier loci using a standard deviation cutoff of 2.0 and 2.5 to find SNPs under moderate and strong selection. 
+		Associated data: Bill morphology data, in this case body size corrected measures for bill length. Complete SNP matrix that was imputed by BEAGLE.  
+		Figures & Results: Multiple loci flagged across the genome as under selection
+
+```{r}
+###############################################################
+# GWAS using RDA
+
+#############################################################
+
+
+gen <- read.PLINK("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/Filtered_Data/ISSJ.ZF.ordered_imputed_BEAGLE.raw", parallel = F)
+dim(gen)
+
+ 
+# RDA requires complete data frames (i.e., no missing genetic data). 
+#use a simple approach to imputing missing genotype values: 
+#we will impute using the mean genotype at each SNP across all individuals which is similar to the approach of Gemma and sPCA
+
+gen.imp <- as.data.frame(gen)
+
+#confirm there are no NAs in imputed data
+sum(is.na(gen.imp)) #no NAs
+
+genfile <- as.matrix(gen.imp, row.names = F, col.names=F)
+
+mode(genfile) <- 'numeric'  #needs to be numeric 
+
+#Import the morphological data with the locality information, but filter out the individuals that were removed during filtering in Radiator 
+
+pheno <- read.csv("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/ISSJ_individual_data.csv")
+
+
+issj_filtered <- read.csv("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/issj_filtered.csv")
+
+
+env.data <- read.csv("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/ISSJ_environmental_data_final.csv")
+
+pheno <- anti_join(pheno, issj_filtered,  by="tissue_number")
+
+
+
+#change the columname of the individual ids in the genotype file 
+genfile <- cbind(tissue_number = rownames(genfile), genfile)
+rownames(genfile) <- NULL
+genfile <- as.data.frame(genfile)
+
+#make sure pheno tissue number is a character class like the genotype dataset 
+pheno$tissue_number <- as.character(pheno$tissue_number)
+
+
+#Do any birds have missing bill length data?
+pheno[is.na(pheno$bill_len_1),]
+
+#one: F10-089 (Pelican; East Pine). Filter them out of genotype file 
+
+genfile <- genfile %>% 
+  dplyr::filter(tissue_number !="F10-089")
+
+dim(genfile)
+sum(is.na(genfile))
+
+#Filter out individuals with missing bill length nares
+pheno <-pheno[!is.na(pheno$bill_len_1),]
+
+
+#oder the pheno file so that it matches with the genetic data (which is ordered by tissue number)
+pheno <- pheno[order(match(pheno$tissue_number, genfile$tissue_number)),]
+
+#make sure the order of the genetic data and phenotype are the same
+identical(pheno$tissue_number,genfile$tissue_number)
+
+
+#Filter to just the genotype info
+#can't have the tissue number in there since it's not numeric
+genfile <- as.matrix(genfile[,-1], row.names =FALSE, col.names=FALSE)
+
+mode(genfile) <- 'numeric'  #needs to be numeric for some reason and matrix was character
+
+
+#Calculate predicted bill length measurements based on body size using formula interface of prcomp. Langin used wing, tarsus and tail in her corrections for body size, but we will use measurements of just wing and tarsus since tail is missing for a lot of birds
+
+pca_wing <- prcomp(~ +wing_right +tarsus1, data=pheno, center=T, scale= T)
+
+axes_wing <- predict(pca_wing, newdata = pheno)
+
+
+##glm of length with body size correction
+glm_pheno <- cbind.data.frame(pheno, axes_wing)
+
+length_pheno <- lm(bill_len_1~+PC1, data=glm_pheno)
+
+anova(length_pheno)
+
+glm_pheno$bill.length.residuals <- length_pheno$residuals
+
+pheno$bill.length.residuals <- length_pheno$residuals
+
+pheno$PC1_body_size <- glm_pheno$PC1
+
+#plot out the residuals 
+length_plot <- glm_pheno %>% 
+  ggplot(aes(x=PC1, y=bill.length.residuals, color=habitat))+
+  geom_point()+
+  geom_smooth(method = "lm")+
+  theme_classic()
+
+#option to see how these individuals compare with Langin's findings 
+#are the differences between habitat significant?
+
+habitat_pheno <- lm(bill.length.residuals~ habitat+PC1, data=glm_pheno)
+
+anova(habitat_pheno) 
+#            Df Sum Sq Mean Sq F value   Pr(>F)    
+# habitat     1 12.846 12.8463 16.8551 7.43e-05 ***
+# PC1         1  0.008  0.0083  0.0108   0.9173    
+# Residuals 119 90.697  0.7622                     
+
+#How correlated are bill length and the environmental variables?
+#merge bill length residuals and env data into one dataset
+
+lengths <- pheno %>% 
+  dplyr::select(c("tissue_number","bill.length.residuals"))
+
+percents <- env.data %>% 
+  dplyr::select(c("tissue_number","percent_pine", "percent_oak", "percent_other"))
+
+
+corr.test.morph <- merge(lengths, percents, by="tissue_number")
+  
+  
+#check correlations
+pairs.panels(corr.test.morph[,2:5], scale=T) #highest is percent pine and percent oak with .58
+
+
+#code to write a phenotype text file for GWAS in GEMMA
+#need to make sure all individuals in the original genetic data file are included 
+
+issj.gen <- as_tibble(read.table("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/Filtered_Data/ISSJ.ZF.ordered_imputed_BEAGLE.raw", sep=" ", header=TRUE))
+
+dim(issj.gen)
+
+issj.gen <- issj.gen %>% 
+  dplyr::rename("tissue_number"="IID")
+
+# Limit pheno data to just the body size predicted bill lengths and rename the tissue id
+
+bill.length <- pheno %>% 
+  dplyr::select(c("tissue_number","bill.length.residuals"))
+
+#make the phenotype data for GEMMA
+#add in all individuals in genetic file for GEMMA
+test <- left_join(issj.gen[,2], bill.length, by="tissue_number")
+
+#replace missing values with a -9 to be read in by GEMMA
+test <- test %>% 
+  tidyr::replace_na(list(bill.length.residuals="-9"))
+
+#make sure the order of the genetic data and phenotype are the same
+identical(test$tissue_number,issj.gen$tissue_number)
+
+#select just the phenotype data and rename collumn
+test <- test %>% 
+  rename("bill.length.residuals"="PHENOTYPE") %>% 
+   dplyr::select("PHENOTYPE")
+
+dim(test)
+#write test file for GEMMA
+#write.table(test, "G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/gwas_results/issj_bill_length_pheno.txt", quote = FALSE, row.names = FALSE, col.names = F)
+
+
+
+#Run the RDA (GWAS) for predicted bill length
+issj.rda <- vegan::rda(genfile ~ bill.length.residuals + Condition(longitude_), data=pheno, scale=T) 
+issj.rda
+
+
+#Option to see if result change if using body size as a conditiona and raw bill length
+#Note that this produces the exact same list of candidates as using the residuals 
+# cond <- cbind(pheno$longitude_, pheno$PC1_body_size)
+# 
+# issj.rda <- vegan::rda(genfile ~ bill_len_1 + Condition(cond), data=pheno, scale=T) 
+# issj.rda
+
+vegan::RsquareAdj(issj.rda) #r2=0.00828951, adusted r2= 8.811315e-05
+
+summary(eigenvals(issj.rda, model="constrained"))
+# Importance of components:
+#                        RDA1
+# Eigenvalue            55.17
+# Proportion Explained   1.00
+# Cumulative Proportion  1.00
+
+
+signif.full <- anova.cca(issj.rda, parallel=getOption("mc.cores"), permutations=how(nperm=9999))
+signif.full
+#          Df Variance      F Pr(>F)
+# Model      1     55.2 1.0107 0.3606
+# Residual 119   6496.6              
+
+signif.axis <- anova.cca(issj.rda, by="axis", parallel=getOption("mc.cores"), permutations=how(nperm=9999))
+signif.axis
+#           Df Variance      F Pr(>F)
+# RDA1       1     55.2 1.0107  0.364
+# Residual 119   6496.6                
+
+#Finally, `vegan` has a simple function for checking Variance Inflation Factors for the predictor variables used in the model:
+
+vegan::vif.cca(issj.rda) 
+
+           # longitude_ bill.length.residuals 
+           #    1.00077               1.00077 
+
+#quick plot of the RDA output using the default plotting in `vegan`
+
+plot(issj.rda, scaling=3)          # default is axes 1 and 2
+
+
+########################################
+#Plotting with fancy figure         ###
+########################################
+
+
+eco <- pheno %>% 
+  dplyr::mutate(POP = dplyr::recode(POP,"Eastern Oak"="E-O","Western Oak"="W-O","Central Oak"="C-O","Eastern Pines"="E-P","Western Pines"="W-P","Central Pines"="C-P")) 
+
+eco$POP <- as.factor(eco$POP)
+
+myCol2 <- c("darkorange","deepskyblue1", "yellow", "lightcyan2","orangered2","navy")
+
+
+plot(issj.rda, type="n", scaling=3)
+points(issj.rda, display="species", pch=20, cex=0.7, col="gray32", scaling=3)           # the SNPs
+points(issj.rda, display="sites", pch=21, cex=1.3, col="gray32", scaling=3, bg=myCol2[eco$POP]) # the jays
+text(issj.rda, scaling=3, display="bp", col="#0868ac", cex=1)                           # the predictors
+legend("topleft", legend=levels(eco$POP), bty="n", col="gray32", pch=21, cex=1, pt.bg=myCol2)
+
+
+#########################################
+### b) Identify RDA candidates        ###
+#########################################
+
+#Use the loadings of the SNPs (their location) in the ordination
+#space to determine which SNPs are candidates for local adaptation.
+#because we only have one trait of interest, we will only focus on the first RDA axis
+#The SNP loadings are stored as `species` in the RDA object. We'll extract the SNP loadings from the first constrained axes:
+
+load.rda <- scores(issj.rda, choices=c(1), display="species")
+
+#If we look at histograms of the loadings on each RDA axis,
+#we can see their (relatively normal) distribution. SNPs loading at the center of the distribution are not showing
+#a relationship with the environmental predictors; those loading in the tails are, and are more likely to be under 
+#selection as a function of those predictors (or some other predictor correlated with them).
+
+
+hist(load.rda[,1], main="Loadings on RDA1")
+
+
+
+#define the function here as `outliers`, where `x` is the vector of loadings and `z` is the number of standard deviations to use:
+
+#find loadings +/-z sd from mean loading
+#locus names of the tails
+
+outliers <- function(x,z){
+  lims <- mean(x) + c(-1, 1) * z * sd(x)       
+  x[x < lims[1] | x > lims[2]]           
+}
+
+#Now let's apply it to the first three constrained axes using sd of 2.5 (moderate selection)
+#using an sd of 2.5 since a majority of adaptation is polygenic and therefore under weak to moderate selection (Hendry's 2019 book)
+ 
+cand<- outliers(load.rda[,1],2.5) 
+
+
+ncand <- length(cand)
+ncand
+
+#We have 88 potential candidate SNPs under moderate selection
+
+
+#make a single data frame with the axis, SNP name, & loading:
+
+cand <- cbind.data.frame(rep(1,times=length(cand)), names(cand), unname(cand))
+
+colnames(cand) <- c("axis","snp","loading")
+
+
+cand$snp <- as.character(cand$snp)
+
+foo <- matrix(nrow=(ncand), ncol=1)  # 1 columns for 1 predictors
+
+colnames(foo) <- c("bill_length")
+
+#select just the bill length collumn from pheno in the helper function
+
+for (i in 1:length(cand$snp)) {
+  nam <- cand[i,2]
+  snp.gen <- genfile[,nam]
+  foo[i,] <- apply(pheno[48],2,function(x) cor(x,snp.gen))
+}
+
+
+cand <- cbind.data.frame(cand,foo)  
+head(cand)
+
+dim(cand)
+
+cand <- cand[!duplicated(cand$snp),] #remove duplicates
+
+dim(cand)
+## 91 candidates
+
+#which predictor each snp is more correlated with
+
+for (i in 1:length(cand$snp)) {
+  bar <- cand[i,]
+  cand[i,5] <- names(which.max(abs(bar[4]))) # gives the variable
+  cand[i,6] <- max(abs(bar[4]))              # gives the correlation
+}
+
+colnames(cand)[5] <- "predictor"
+colnames(cand)[6] <- "correlation"
+
+table(cand$predictor)
+
+##To highlight SNPs
+sel <- cand$snp
+env <-cand$predictor
+env[env=="bill_length"] <- '#F9E424'
+
+
+
+# color all SNPs by predictor:
+col.pred <- rownames(issj.rda$CCA$v) # pull the SNP names
+
+
+for (i in 1:length(sel)) {           # color code candidate SNPs
+  foo <- match(sel[i],col.pred)
+  col.pred[foo] <- env[i]
+}
+
+colors <- c("#F9E424")
+
+col.pred[!grepl(paste(colors,collapse="|"), col.pred)] <- '#f1eef6' # non-candidate SNPs
+
+empty <- col.pred
+
+empty[grep("#f1eef6",empty)] <- rgb(0,1,0, alpha=0) # transparent
+empty.outline <- ifelse(empty=="#00FF0000","#00FF0000","gray32")
+
+#Color the length morph SNPs
+bg <- c('#F9E424')
+
+
+# axes 1 & 2
+plot(issj.rda, type="n", scaling=1.75, xlim=c(-1.75,1.75), ylim=c(-1.75,1.75))
+points(issj.rda, display="species", pch=21, cex=1, col="grey32", bg=col.pred, scaling=1.75)
+points(issj.rda, display="species", pch=21, cex=1,col=empty.outline, bg=empty, scaling=1.75)
+text(issj.rda, scaling=1, display="bp", col="black", cex=1)            # the predictors
+legend("topright",legend=c("Bill Length"), bty="n", col="gray32", pch=21, cex=1, pt.bg=bg)
+
+
+```
+Can now extract the positional information from the RDA so we can get annotation information from bedops
+
+
+
+Extract outlier loci from the RDA results for BLAST annotation
+```{r}
+
+#to make the eventual plot look smoother (i.e. include all the snps and not just the candidates). Will need to calculate the loadings to bill length  for all snps not just the outliers. 
+
+# Get the scores from the first three constrained axes 
+rda_loci<- load.rda[,1] 
+
+
+
+#count the number of loci
+
+nrda_loci <- length(rda_loci)
+nrda_loci
+
+#make a single data frame with the axis, SNP name, & loading:
+
+rda_loci <- cbind.data.frame(rep(1,times=length(rda_loci)), names(rda_loci), unname(rda_loci))
+
+
+colnames(rda_loci) <- c("axis","snp","loading")
+
+
+
+#function to normalize data 
+normal <- function(x){
+  (x - min(x))/(max(x)-min(x))      
+}
+
+
+rda_loci$abs_loading <- abs(rda_loci$loading)
+
+
+rda_loci$loading_norm <-normal(rda_loci$abs_loading)
+
+
+# 
+# rda_loci$abs_loading <- abs(rda_loci$loading)
+# 
+# rda_loci$loading_norm <- normal(rda_loci$abs_loading)
+
+
+rda_loci$snp <- as.character(rda_loci$snp)
+
+foo <- matrix(nrow=(nrda_loci), ncol=1)  # 1 columns for 1 predictors
+
+
+#Remove potential duplicates
+# duplicate detections:
+length(rda_loci$snp[duplicated(rda_loci$snp)]) #no duplicates
+foo <- cbind(rda_loci$axis,duplicated(rda_loci$snp))
+table(foo[foo[,1]==1,2])
+table(foo[foo[,1]==2,2])
+table(foo[foo[,1]==3,2])
+
+rda_loci <- rda_loci[!duplicated(rda_loci$snp),] #remove duplicates
+
+dim(rda_loci)
+
+
+#Split cand so the snp name matches the outliers output from the RDA which has a single collumn with snp and position
+#make a new df
+foo <- data.frame(do.call('rbind', strsplit(as.character(rda_loci$snp),'_',fixed=TRUE)))
+
+#get rid of the X in the snp name 
+foo$X1 <- str_remove(foo$X1, "X")
+
+#select just the first collumn which should be the snp name
+foo$snp <-foo$X1
+
+#Select just the snp name and replace the snp name from RDA
+foo <- foo %>% 
+  dplyr::select(c("snp"))
+
+foo$snp <- as.character(foo$snp)
+
+rda_loci$snp.no <- foo$snp
+
+#get the positional information from the Gemma file since 
+
+
+
+#option to get positional information from vcf
+# vcf_pos <- as_tibble(colnames(read.vcf("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/Filtered_Data/ISSJ.ZF.ordered.vcf"))) %>% 
+#   melt()
+# 
+# #assign a new collum with snp integers
+# 
+# vcf_pos$snp.no <- as.character(seq.int(nrow(vcf_pos)))  #create a sequential order of "snps" so it'll merge with rda results 
+
+# vcf_pos <- vcf_pos %>% 
+#   dplyr::rename("ID"="value")
+# 
+
+
+ISSJgwas$snp.no <- ISSJgwas$snp
+
+ISSJgwas$POS_end <- ISSJgwas$ZFPOS + 88 
+
+rda_loci <- left_join(rda_loci,ISSJgwas, by="snp.no")
+
+
+#extract the positional information for the flsj genome relative to zebra finch 
+rda_pos <- left_join(rda_loci, ZEFIcor, by = "ZFPOS") %>% 
+  dplyr::select(! "snp.y") %>% 
+  rename("snp.x"="snp")
+
+#get rid of chr in the chromosome name
+rda_pos$chr <- gsub("Chr_*","",rda_pos$chr) 
+
+#merge in the annotation information from SnpEff 
+# rda_ann <- left_join(rda_loci,zefi_ann,  by = "ID") %>% 
+#   rename("chr"="CHR")
+
+
+#order by the chromosomes in the correct order
+chrom <- as.data.frame( c("1", "1A", "2", "3", "4", "4A", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15","17","18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "Un", "Z")) 
+names(chrom)[1] <- "chr"
+
+rda_pos <- left_join(chrom,rda_pos, by="chr", all.y=T) 
+
+
+rda_pos$BP <- seq.int(nrow(rda_pos)) #create a sequential order of "base pair"
+
+
+#Now, we can filter the annotated snp information and filter based on the candidates flagged by the RDA
+
+
+#Change candidates from RDA to dataframe 
+RDAcand <- as_tibble(cand) 
+
+#select just the 91 snps that were candidates to be annotated by blast 
+RDAcandlist <- RDAcand %>% 
+  dplyr::select("snp")
+
+#write csv and compare with results from RDA using raw bill length
+
+#write_csv(RDAcand, "G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/Filtered_Data/ISSJ.RDA_resudual.csv", quote=F)
+
+#Resid_rda_cand <- read.csv("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/Filtered_Data/ISSJ.RDA_resudual.csv")
+
+#merge to see what snps differ between the two RDAs
+#unmatched_Snps <- anti_join(Resid_rda_cand,RDAcand, by="snp")
+#Note, looks like te results are exactly the same between the two RDAs
+
+#Remove the loading information from the annotation file so that there are no duplicate collumns
+#ann_pos <- rda_ann %>% 
+#  dplyr::select(c("snp", "ID","POS", "abs_loading","loading_norm","Annotation", "Annotation_Impact", "Gene_Name","BP"))
+
+
+#merge canidate list with positional information
+
+rda.pos.info <- left_join(RDAcandlist, rda_pos, by=c("snp"))
+
+#select the chromosome, start and end postion
+
+rda.pos.info.bedops <- rda.pos.info %>% 
+  dplyr::select(c("ZFCHROM","ZFPOS","POS_end"))
+
+
+#change the name in ZFCHROM so it can be read in by bedops
+rda.pos.info.bedops$ZFCHROM <- gsub("Chr_*","chr",rda.pos.info.bedops$ZFCHROM) 
+
+#write tab deliminated file with chromosome, start, and end position. To see if anything interesting pops up in bedops
+#write.table(rda.pos.info.bedops, file="G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/gwas_results/RDA.ann.txt", sep = "\t", row.names = FALSE, col.names = F, quote = F)
+
+
+```
+
+
+We can now use these positional sequences in bedops to find any genes within 25kb
+
+OUTPUT GENES WITHIN REGION FROM GWAS -- BEDOPS 
+
+Convert this file to .bed format for bedops.
+
+Most importantly, bedmap expects sorted inputs. You can use the BEDOPS sort-bed program to ensure your inputs are properly sorted.
+
+Note You only need to sort once, and only if your input data are unsorted, as all BEDOPS tools take in and export sorted BED data.
+
+```{bash}
+## Need to make sure each is sepperated by tabs and has "chr" before the chromosome number
+#also need to remove the line breaks 
+
+tr -d '\r' < RDA.ann.txt > RDA_ann.bed
+
+tr -d '\r' < GWAS.ann.txt > GEMMA_ann.bed
+
+tr -d '\r' < GEA.ann.txt > GEA_ann.bed
+
+## BEDOPS require that the bed file is sorted, so use sort-bed
+#activate conda environment first 
+conda activate 
+
+sort-bed GEMMA_ann.bed > gemma_elements.bed
+
+sort-bed RDA_ann.bed > rda_elements.bed
+
+sort-bed GEA_ann.bed > GEA_elements.bed
+
+```
+
+Download the corresponding annotated assembly (gtf): http://ftp.ensembl.org/pub/release-103/gtf/taeniopygia_guttata/Taeniopygia_guttata.bTaeGut1_v1.p.103.chr.gtf.gz
+
+Run the following code to convert the .gtf.gz to bed file to search for genes.
+
+```{bash}
+## unzip file
+gunzip -c Taeniopygia_guttata.bTaeGut1_v1.p.103.chr.gtf.gz > Taeniopygia_guttata.bTaeGut1_v1.p.103.chr.gtf
+
+## add "chr" to beginning of each chr number/name
+sed -i -e 's/^/chr/' Taeniopygia_guttata.bTaeGut1_v1.p.103.chr.gtf 
+
+## gtf2bed for newer versions don't allow you to convert to a bed file unless you add transcript id
+#be sure to activate conda environtment so that bedops works
+awk '{ if ($0 ~ "transcript_id") print $0; else print $0" transcript_id \"\";"; }' Taeniopygia_guttata.bTaeGut1_v1.p.103.chr.gtf | gtf2bed - > tae.chr.genes.bed
+
+## output genes within 25kb
+bedmap --range 25000 --echo --echo-map-id-uniq --delim '\t' gemma_elements.bed tae.chr.genes.bed > gemma_gene_ids_25kb.bed
+
+bedmap --range 25000 --echo --echo-map-id-uniq --delim '\t' rda_elements.bed tae.chr.genes.bed > rda_gene_ids_25kb.bed
+
+bedmap --range 25000 --echo --echo-map-id-uniq --delim '\t' GEA_elements.bed tae.chr.genes.bed > GEA_gene_ids_25kb.bed
+
+## now the resulting bed file will have the gene ids found within 25kb of each variant
+
+```
+
+
+
+Extract the annotation information for the outliers detected by GEMMA and the RDA-GWAS and the GEA and assemble them all into a pretty table
+```{r}
+
+Gemma.ann <- read.delim("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/gwas_results/gemma_gene_ids_25kb.bed", header = F, sep = ";", quote = "\"", comment.char = "#")
+
+
+Gemma.ann <- Gemma.ann %>% 
+  tidyr::separate(V1, c("chromosome","start", "end", "ensemble_id"))
+
+#filter NAs from ensemble ID since those are the ones without any annotation
+
+## define a helper function
+empty_as_na <- function(x){
+    if("factor" %in% class(x)) x <- as.character(x) ## since ifelse wont work with factors
+    ifelse(as.character(x)!="", x, NA)
+}
+
+## transform all columns
+Gemma.ann<- Gemma.ann %>% 
+  mutate_each(funs(empty_as_na)) 
+
+Gemma.ann <- Gemma.ann[!is.na(Gemma.ann$ensemble_id),]
+
+
+Gemma.ann <-gather(data=Gemma.ann, key="position", value="ensemble_id", 4:ncol(Gemma.ann))
+
+Gemma.ann <- Gemma.ann[!is.na(Gemma.ann$ensemble_id),] %>% 
+  dplyr::select(!c("position"))
+
+
+#Use the R packages mygene and biomaRt to get go terms and functional information for each acession number using their 
+#zebra finch database 
+#Get the entrez id's from mygene to get the annotation and go terms to merge 
+
+out <- as_tibble(mygene::getGenes(Gemma.ann$ensemble_id))
+
+Gemma.ann$entrezgene_id <- out$entrezgene
+
+Gemma.ann <- na.omit(Gemma.ann, cols="entrezgene_id")
+
+
+#look at the list of datsets BiomaRt has
+#mart <- useEnsembl('ensembl')
+#mart_data <- listDatasets(mart) #Zebra Finch is bTaeGut1_v1.p
+
+#limit to just zebra finch and get the go information for each gene in the assembly 
+mart <- useEnsembl(biomart = "ensembl", dataset = "tguttata_gene_ensembl")
+
+
+#option to look at the attributes one can select for in the package
+#go_attributes <- listAttributes(mart)
+
+results <- biomaRt::getBM(attributes = c('chromosome_name', 'start_position','end_position', 'ensembl_gene_id', 'entrezgene_id', 'gene_biotype','entrezgene_accession', 'entrezgene_description', 'go_id', 'name_1006', 'definition_1006'),filters = 'entrezgene_id', 
+              values = Gemma.ann$entrezgene_id, 
+              mart = mart)
+
+#save the attributes as a CSV so it can be run locally instead of relying on the connection to ensemble
+
+#write.csv(results, "G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/gwas_results/gemma_goids_ensembl.csv", row.names=F)
+
+results <- read.csv("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/gwas_results/gwas_goids_ensembl.csv")
+
+
+##filter out missing values in the entrez ID collumn
+results$entrezgene_id <- as.character(results$entrezgene_id) 
+
+results <-  na.omit(results, cols="entrezgene_id")
+
+Gemma.ann <- dplyr::left_join(Gemma.ann, results, by="entrezgene_id", na.omit=T) 
+
+
+
+
+#####
+#Now the same thing for the RDA results
+#####
+
+RDA.ann <- read.delim("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/gwas_results/rda_gene_ids_25kb.bed", header = F, sep = "", quote = "\"", comment.char = "#")
+
+library(splitstackshape)
+
+RDA.ann <-cSplit(RDA.ann, "V4", sep=";")
+
+#filter NAs from the first ensemble ID since those are the ones without any annotation
+
+## transform all columns
+RDA.ann <-RDA.ann %>% 
+  mutate_each(funs(empty_as_na)) 
+
+RDA.ann <- RDA.ann[!is.na(RDA.ann$V4_1),]
+
+
+RDA.ann <-gather(data=RDA.ann, key="position", value="ensemble_id", 4:ncol(RDA.ann))
+
+RDA.ann <- RDA.ann[!is.na(RDA.ann$ensemble_id),] %>% 
+  dplyr::select(!c("position"))
+
+RDA.ann <- RDA.ann %>% 
+  dplyr::rename("chromosome"="V1" ,
+               "start"="V2",
+              "end"="V3")
+
+#Use the R packages mygene and biomaRt to get go terms and functional information for each acession number using their 
+#zebra finch database 
+#Get the entrez id's from mygene to get the annotation and go terms to merge 
+
+out <- as_tibble(mygene::getGenes(RDA.ann$ensemble_id))
+
+RDA.ann$entrezgene_id <- out$entrezgene
+
+RDA.ann <- na.omit(RDA.ann, cols="entrezgene_id")
+
+
+results <- biomaRt::getBM(attributes = c('chromosome_name', 'start_position','end_position', 'ensembl_gene_id', 'entrezgene_id', 'gene_biotype','entrezgene_accession', 'entrezgene_description', 'go_id', 'name_1006', 'definition_1006'),filters = 'entrezgene_id', 
+              values = RDA.ann$entrezgene_id, 
+              mart = mart)
+
+
+#write.csv(results, "G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/gwas_results/rda_goids_ensembl.csv", row.names=F)
+
+results <- read.csv("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/gwas_results/rda_goids_ensembl.csv")
+
+
+##filter out missing values in the entrez ID collumn
+results$entrezgene_id <- as.character(results$entrezgene_id) 
+
+results <-  na.omit(results, cols="entrezgene_id")
+
+RDA.ann <- dplyr::left_join(RDA.ann, results, by="entrezgene_id", na.omit=T) 
+
+#Now the same thing for the GEA results from part 2
+#####
+
+
+GEA.ann <- read.delim("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/gwas_results/GEA_gene_ids_25kb.bed", header = F, sep = "", quote = "\"", comment.char = "#")
+
+
+GEA.ann <-cSplit(GEA.ann, "V4", sep=";")
+
+#filter NAs from the first ensemble ID since those are the ones without any annotation
+
+## transform all columns
+GEA.ann <-GEA.ann %>% 
+  mutate_each(funs(empty_as_na)) 
+
+GEA.ann <- GEA.ann[!is.na(GEA.ann$V4_1),]
+
+
+GEA.ann <-gather(data=GEA.ann, key="position", value="ensemble_id", 4:ncol(GEA.ann))
+
+
+#filter NAs from ensemble ID since those are the ones without any annotation
+## transform all columns
+
+GEA.ann <- GEA.ann[!is.na(GEA.ann$ensemble_id),] %>% 
+  dplyr::select(!c("position"))
+
+
+#rename the collumns
+
+GEA.ann <- GEA.ann %>% 
+  dplyr::rename("chromosome"="V1" ,
+               "start"="V2",
+              "end"="V3")
+
+
+
+
+#Use the R packages mygene and biomaRt to get go terms and functional information for each acession number using their 
+#zebra finch database 
+#Get the entrez id's from mygene to get the annotation and go terms to merge 
+
+out <- as_tibble(mygene::getGenes(GEA.ann$ensemble_id))
+
+GEA.ann$entrezgene_id <- out$entrezgene
+
+GEA.ann <- na.omit(GEA.ann, cols="entrezgene_id")
+
+
+results <- biomaRt::getBM(attributes = c('chromosome_name', 'start_position','end_position', 'ensembl_gene_id', 'entrezgene_id', 'gene_biotype','entrezgene_accession', 'entrezgene_description', 'go_id', 'name_1006', 'definition_1006'),filters = 'entrezgene_id', 
+              values = GEA.ann$entrezgene_id, 
+              mart = mart)
+
+
+#write.csv(results, "G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/gwas_results/GEA_goids_ensembl.csv", row.names=F)
+
+results <- read.csv("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/gwas_results/GEA_goids_ensembl.csv")
+
+
+##filter out missing values in the entrez ID collumn
+results$entrezgene_id <- as.character(results$entrezgene_id) 
+
+results <-  na.omit(results, cols="entrezgene_id")
+
+results <-  results %>% 
+  dplyr::rename("ZFPOS" ="start_position")
+ 
+# #read in the results from the GEA
+GEA.snps <- read.csv("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/gwas_results/GEA.ann.csv")
+
+
+GEA.ann <- GEA.ann %>% 
+  dplyr::rename("ZFPOS" ="start")
+
+
+GEA.ann<- left_join(GEA.ann, GEA.snps, by="ZFPOS") 
+
+
+
+GEA.ann <- dplyr::left_join(GEA.ann, results, by="entrezgene_id", na.omit=T) 
+
+#rename the zebra finch position to the so there is just one start
+GEA.ann <- GEA.ann %>% 
+  dplyr::rename("start"="ZFPOS.x")
+
+#select the correct collums so the different lists match from the three tests 
+GEA.ann <- GEA.ann %>% 
+  dplyr::select(c("chromosome",  "start" ,  "end", "ensemble_id" , "entrezgene_id", "chromosome_name",    "ensembl_gene_id", "gene_biotype"  , "entrezgene_accession" , "entrezgene_description","go_id",  "name_1006" ,  "definition_1006"  ))
+
+
+RDA.ann <- RDA.ann %>% 
+  dplyr::select(c("chromosome", "start" ,  "end", "ensemble_id" , "entrezgene_id", "chromosome_name",    "ensembl_gene_id", "gene_biotype"  , "entrezgene_accession" , "entrezgene_description","go_id",  "name_1006" ,  "definition_1006"  ))
+
+Gemma.ann <- Gemma.ann %>% 
+  dplyr::select(c("chromosome"  , "start" ,  "end", "ensemble_id" , "entrezgene_id", "chromosome_name",    "ensembl_gene_id", "gene_biotype"  , "entrezgene_accession" , "entrezgene_description","go_id",  "name_1006" ,  "definition_1006"  ))
+
+
+
+#make collumn of "Test" for each annotation file
+
+RDA.ann$test_name <- "RDA"
+
+Gemma.ann$test_name <- "GEMMA"
+
+GEA.ann$test_name <- "GEA"
+
+
+# read in the list of Bill morphology candidates from the literature 
+
+bill_gene_list<- read.csv("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/gwas_results/gene_bill_morph_GO_function.csv")
+
+
+candidate_list <- rbind(RDA.ann, Gemma.ann, GEA.ann)
+
+#rename start back to ZFPOS
+candidate_list <- candidate_list%>% 
+  dplyr::rename("Gene_Name"="entrezgene_accession",
+               "ZFPOS"="start" )  
+
+candidate_list$ZFPOS <- as.integer(candidate_list$ZFPOS)
+
+#Probably a better way to do this, but need to add the loadings of the GEA results to the final list of candidates
+#so that the correlations of the habitat predictors can be added 
+
+#rename the absolute loading the GEA so it's not confused with the absolute loading of the RDA
+GEA.snps <- GEA.snps %>% 
+  dplyr::rename("GEA"="abs_loading")
+
+candidate_list  <- left_join(candidate_list, GEA.snps[c(14, 7,11)], by="ZFPOS")
+
+
+#option to remove any empty characters in the gene name 
+candidate_list$Gene_Name<- trimws(candidate_list$Gene_Name, which = c("both")) 
+  
+bill_gene_list$Gene_Name <- trimws(bill_gene_list$Gene_Name, which = c("both"))  
+
+
+#write.csv(candidate_list, "G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/gwas_results/candidate_snp_table.csv", row.names = F)
+
+
+#try merging just on gene name 
+
+bill.genes.merged <- left_join(candidate_list , bill_gene_list, by="Gene_Name") %>% 
+  na.omit(cols="Literature") %>% 
+  filter(!Gene_Name=="")
+
+#remove duplicates based on the query id and gene name 
+bill.genes.merged <- bill.genes.merged[!duplicated(bill.genes.merged[c("ensemble_id", "Gene_Name")]),] 
+
+#looks liek there are 4 genes that pop up that were found in Bosse et al. 
+
+bill.genes.merged <- bill.genes.merged %>% 
+  rename("ZFPOS"="start")
+
+
+#Make a pretty table by getting the positional information from the RDA_GWAS, GEMMA, and GEA
+#there is a much better way to do this but will just split data and then re merge after cleaning it up a bit
+
+
+#merge with the FLSJ coordintes 
+
+ZEFIcor <- read.csv("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/Filtered_Data/ISSJ.ZFcorr.csv")
+
+
+bill.genes.merged.rda <- candidate_list %>% 
+  subset(test_name == "RDA") 
+
+
+bill.genes.merged.rda <- left_join(bill.genes.merged.rda, rda.pos.info, by="ZFPOS")
+
+bill.genes.merged.rda <- bill.genes.merged.rda %>% 
+  dplyr::select(c("CHROM", "POS", "ZFCHROM","ZFPOS", "abs_loading", "Gene_Name", "test_name","name_1006",
+ "definition_1006")) %>% 
+  dplyr::rename("ZFPosition"="ZFPOS")
+
+
+
+#The GEMMA
+
+bill.genes.merged.gemma <- candidate_list%>% 
+  subset(test_name == "GEMMA")
+
+#get rid of chr in the chromosome name
+pos.info$CHROM <- gsub("Chr_*","",pos.info$chr) 
+
+#merge to the position data
+bill.genes.merged.gemma <-left_join(bill.genes.merged.gemma, pos.info, by="ZFPOS")
+
+#get the scaffold info
+foo <- data.frame(do.call('rbind', strsplit(as.character(bill.genes.merged.gemma$sca.snp),'.',fixed=TRUE)))
+
+bill.genes.merged.gemma$CHROM <- foo$X1
+
+bill.genes.merged.gemma <- bill.genes.merged.gemma %>% 
+  dplyr::select(c("CHROM", "POS", "ZFCHROM","ZFPOS", "pvalue.adj", "Gene_Name", "test_name", "name_1006", "definition_1006"))%>% 
+  dplyr::rename("ZFPosition"="ZFPOS")
+
+#The GEA
+bill.genes.merged.gea <- candidate_list%>% 
+  subset(test_name == "GEA")
+
+
+#read in GEA positional information and marge with the annotation
+
+GEA.pos.info <-read.csv("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/gwas_results/GEA.ann.csv")
+
+
+bill.genes.merged.gea  <- left_join(bill.genes.merged.gea , GEA.pos.info, by="ZFPOS") 
+
+
+
+#get rid of chr in the chromosome name
+bill.genes.merged.gea$CHROM <- gsub("Chr_*","",bill.genes.merged.gea$chromosome) 
+
+#get the scaffold info
+foo <- data.frame(do.call('rbind', strsplit(as.character(bill.genes.merged.gea$sca.snp),'.',fixed=TRUE)))
+
+bill.genes.merged.gea$CHROM <- foo$X1
+
+
+bill.genes.merged.gea <- bill.genes.merged.gea %>%
+  dplyr::select(c("CHROM", "POS", "ZFCHROM","ZFPOS","GEA", "Gene_Name", "test_name", "name_1006", "definition_1006"))%>% 
+  dplyr::rename("ZFPosition"="ZFPOS")
+
+#merge the annotation from GEMMA, and the GWAS-rda 
+
+bill.genes.merged <- full_join(bill.genes.merged.rda, bill.genes.merged.gemma, by=c("CHROM", "POS", "ZFCHROM","ZFPosition", "name_1006"
+, "definition_1006"))
+
+bill.genes.merged <- full_join(bill.genes.merged, bill.genes.merged.gea, by=c("CHROM", "POS", "ZFCHROM","ZFPosition","name_1006",
+"definition_1006"))
+
+
+#Fill in the missing gene names of one collumn so there is just one genes collumn 
+bill.genes.merged$Gene_Name.x[is.na(bill.genes.merged$Gene_Name.x)] <- bill.genes.merged$Gene_Name.y[is.na(bill.genes.merged$Gene_Name.x)] 
+
+
+#Fill in the missing gene names of one collumn so there is just one genes collumn 
+bill.genes.merged$Gene_Name.x[is.na(bill.genes.merged$Gene_Name.x)] <- bill.genes.merged$Gene_Name[is.na(bill.genes.merged$Gene_Name.x)] 
+
+
+
+
+#rename the collumns and select the ones we want to keep 
+bill.genes.merged <- bill.genes.merged %>% 
+  dplyr::rename("Scaffold"="CHROM",
+         "Position"="POS", 
+  "Chromosome"="ZFCHROM",
+ "Gene Symbol"="Gene_Name.x",
+ "Gene Name"="name_1006"
+) %>%  
+  dplyr::select("Scaffold","Position","Chromosome","ZFPosition","abs_loading","GEA","pvalue.adj","Gene Symbol","Gene Name", "definition_1006") %>% 
+  dplyr::rename( "RDA"="abs_loading",
+"GEMMA"="pvalue.adj", 
+"Function"="definition_1006") 
+
+
+#get rid of chr in the chromosome name
+bill.genes.merged$Chromosome <- gsub("Chr_*","",bill.genes.merged$Chromosome)
+
+#count how many unique genes there are 
+length(unique(bill.genes.merged$`Gene Symbol`))
+
+#Write csv to turn into a pretty table in MS
+#write.csv(bill.genes.merged, "G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/gwas_results/bill_genes_snp_table_final.csv", row.names = F)
+
+#Curious if I look at "similar" genes (ie, get rid of the specific varieties and focus of Fibrill binding genes), and get a sense of other possibilities. 
+
+#select jsut the first three characters of the collumns which should encompass most of the gene name so they can be merged 
+ 
+candidate_list$gene_family <- substr(candidate_list$Gene_Name, 0, 3)
+#  
+ bill_gene_list$gene_family <- substr(bill_gene_list$Gene_Name, 0, 3) 
+# 
+# bill_gene_list<- bill_gene_list[,c("CHROM","POS","ZFCHROM","ZFPOS","GEMMA","RDA","Genes")]
+# 
+#merge based on the first three characters which usually defines the gene family like SLC
+# 
+ merged <- left_join(candidate_list , bill_gene_list, by="gene_family") %>% 
+   filter(!Gene_Name.x=="")
+# # 
+
+#remove duplicates
+
+merged <- distinct(merged)
+# 
+# 
+# 
+# #remove duplicates based on the query id and gene name then
+merged <- merged[!duplicated(merged[c("ensemble_id", "Gene_Name.x")]),] 
+
+
+#Write up a list of "similar" genes
+#write.csv(bill.genes.merged, "G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/gwas_results/gene_family_snp_table.csv", row.names = F)
+
+
+
+```
+
+
+
+Compile excel of all genes flagged by both tests for the supplementary materials. Want to retain scaffold and position within the FLSJ, Zebra Finch Chromosomes, RDA Loading, GEMMA P-value, and genes in region 
+
+```{r}
+
+
+#Replace NA values with unknown
+RDA.ann[is.na(RDA.ann)] <- "unk" #for RDA test
+Gemma.ann[is.na(Gemma.ann)] <- "unk" #For Gemma
+GEA.ann[is.na(GEA.ann)] <- "unk" #for GEA test
+
+#remove duplicates of the query name and accession
+RDA.ann.table <- RDA.ann[!duplicated(RDA.ann[c("go_id", "ensemble_id")]),]
+
+#change the name of the annotated list to get the positional information 
+
+RDA.ann.table <- RDA.ann.table %>% 
+  rename("start"="ZFPOS")
+
+
+RDA.ann.table <- left_join(RDA.ann.table, rda.pos.info, by="ZFPOS")
+
+
+
+RDA.ann.table <- RDA.ann.table %>% 
+  dplyr::select(c("CHROM", "POS", "ZFCHROM","ZFPOS", "abs_loading","entrezgene_accession", "test_name"))%>% 
+    filter(!"entrezgene_accession"=="")
+
+RDA.ann.table <- RDA.ann.table[!duplicated(RDA.ann.table[c("CHROM", "POS","entrezgene_accession")]),] 
+
+RDA.ann.table$ZFCHROM <- gsub("Chr_*","",RDA.ann.table$ZFCHROM) 
+
+#group by the positional information and and create a new collumn that lists the genes that are in the region around that outlier snp
+RDA.ann.table <- as.data.table(RDA.ann.table)[, toString(entrezgene_accession), by = list(CHROM, POS, ZFCHROM,ZFPOS, abs_loading)] %>% 
+  rename("V1"="Genes")
+
+
+##FOR GEMMA
+
+#remove duplicates of the query name and accession
+Gemma.ann.table <- Gemma.ann[!duplicated(Gemma.ann[c("go_id", "ensemble_id")]),]
+
+
+Gemma.ann.table <- Gemma.ann.table %>% 
+  rename("start"="ZFPOS")
+
+Gemma.ann.table$ZFPOS <- as.integer(Gemma.ann.table$ZFPOS)
+
+Gemma.ann.table <- left_join(Gemma.ann.table, pos.info, by="ZFPOS") 
+
+Gemma.ann.table$scaffold <- data.frame(do.call('rbind', strsplit(as.character(Gemma.ann.table$sca.snp),'.',fixed=TRUE)))
+
+
+Gemma.ann.table <- Gemma.ann.table %>% 
+  dplyr::select(c("CHROM", "POS", "ZFCHROM","ZFPOS", "scaffold", "pvalue.adj", "entrezgene_accession", "test_name"))%>% 
+    filter(!entrezgene_accession=="")
+
+Gemma.ann.table <- Gemma.ann.table[!duplicated(Gemma.ann.table[c("CHROM", "POS","entrezgene_accession")]),] 
+
+Gemma.ann.table$ZFCHROM <- gsub("Chr_*","",Gemma.ann.table$ZFCHROM) 
+
+#Remove rows with missing positional values 
+Gemma.ann.table <-Gemma.ann.table[!is.na(Gemma.ann.table$ZFCHROM),]
+ 
+
+#group by the positional information and and create a new collumn that lists the genes that are in the region around that outlier snp
+Gemma.ann.table <- as.data.table(Gemma.ann.table)[, toString(entrezgene_accession), by = list(CHROM, POS, scaffold.X1, ZFCHROM,ZFPOS, pvalue.adj)] %>% 
+  rename("V1"="Genes")
+
+
+#there is a slight drop off with snps but this is likely because there are several regions that didn't to align to the zebra Finch Genome and there are still a lot of unknowns that aligned but don't seem to serve a known fuction just yet. 
+#There is also the potential issue the go terms with this particular zebra finch database for the package is just outdated and doesn't have as many genes annotated?
+
+
+all.snp.gene.list <- full_join(RDA.ann.table, Gemma.ann.table, by =c("CHROM","POS", "ZFCHROM", "ZFPOS"))
+
+
+#read in GEA table and add it to the full snp list 
+
+GEA.pos.info <-read.csv("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/gwas_results/GEA.ann.csv")
+
+GEA.ann <- GEA.ann %>% 
+ dplyr::rename( "ZFPOS"="start")   
+
+
+GEA.ann.table <- left_join(GEA.ann, GEA.pos.info, by="ZFPOS")
+
+
+GEA.ann.table <- GEA.ann.table %>% 
+  dplyr::select(c("CHROM", "POS", "ZFCHROM","ZFPOS", "loading.x", "predictor", "entrezgene_accession", "test_name"))%>% 
+    filter(!entrezgene_accession=="")
+
+GEA.ann.table <- GEA.ann.table[!duplicated(GEA.ann.table[c("CHROM", "POS","entrezgene_accession")]),] 
+
+GEA.ann.table$ZFCHROM <- gsub("Chr_*","",GEA.ann.table$ZFCHROM) 
+
+#Remove rows with missing positional values 
+GEA.ann.table <-GEA.ann.table[!is.na(GEA.ann.table$ZFCHROM),]
+ 
+
+#group by the positional information and and create a new collumn that lists the genes that are in the region around that outlier snp
+GEA.ann.table <- as.data.table(GEA.ann.table)[, toString(entrezgene_accession), by = list(CHROM, POS, ZFCHROM,ZFPOS, loading.x, predictor)] %>% 
+  rename("V1"="Genes",
+        loading.x="GEA" )
+
+
+all.snp.gene.list <- full_join(all.snp.gene.list, GEA.ann.table, by =c("CHROM","POS", "ZFCHROM", "ZFPOS"))
+
+#make one gene list by merging gene names from GEMMA and the GEA then remove the extra collumns
+
+all.snp.gene.list$Genes.x[is.na(all.snp.gene.list$Genes.x)] <- all.snp.gene.list$Genes.y[is.na(all.snp.gene.list$Genes.x)] 
+
+all.snp.gene.list$Genes.x[is.na(all.snp.gene.list$Genes.x)] <- all.snp.gene.list$Genes[is.na(all.snp.gene.list$Genes.x)] 
+
+
+all.snp.gene.list <- all.snp.gene.list %>% 
+  dplyr::select(!c("Genes.y", "Genes")) %>% 
+  dplyr::rename( "Genes"="Genes.x") %>% 
+    dplyr::rename( "GEMMA"="pvalue.adj") %>% 
+    dplyr::rename("GWAS-RDA"="abs_loading")
+
+
+#put the collumns in the correct order 
+all.snp.gene.list<- all.snp.gene.list[,c("ZFCHROM","ZFPOS","CHROM","scaffold.X1","POS","GEMMA","GWAS-RDA","GEA","predictor","Genes")]
+
+#rename the collumns 
+all.snp.gene.list <- all.snp.gene.list %>% 
+  rename("CHROM"="Scaffold") %>% 
+  rename("POS"="Position") %>% 
+    rename("ZFCHROM"="Chromosome") %>% 
+    rename("ZFPOS"="ZFPosition") %>% 
+    rename("predictor"="Predictor") 
+
+
+
+#Make csv for supplemental info
+
+#write.csv(all.snp.gene.list, "G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/gwas_results/all_snps_genes_list_for_supplement_final.csv", row.names = F)
+
+
+#count how many shared genes are detected by both tests 
+
+shared_genes <- all.snp.gene.list[!is.na(all.snp.gene.list$GEMMA),] #5
+shared_genes <- shared_genes[!is.na(shared_genes$`GWAS-RDA`),]  #0 snps between the two gWAS tests
+shared_genes <- all.snp.gene.list[!is.na(all.snp.gene.list$`GWAS-RDA`),] #53
+shared_genes <- shared_genes[!is.na(shared_genes$GEA),] #5 snps and 8 genes
+
+shared_genes$Genes
+
+
+
+
+
+```
+
+
+
+Make manhattan plots fof the GWAS results from GEMMA and RDA
+
+
+
+```{r}
+
+
+########################################################
+###                     Manhattan Plot               ###
+########################################################
+
+
+#Note that Zang et al. 2019 advocate for a P-value of P = 0.0002,( in wgs I see 0.0000002)
+#or a LOD score of 3.0 in GWAS to void erroneous outlier detection
+#for a multi-locus test
+
+ISSJgwas <- as_tibble(read.delim("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/gwas_results/Beagle_imputed_GWAS.assoc.txt", header=T))
+
+ISSJgwas <- ISSJgwas %>% 
+   rename("p_wald"="pvalue") 
+
+
+#adjusted p-values
+
+ISSJgwas$pvalue.adj <- p.adjust(ISSJgwas$pvalue, "fdr", n = length(ISSJgwas$pvalue))
+
+ISSJgwas$chr <- gsub("Chr_*","",ISSJgwas$chr) 
+
+#Split so the snp name matches the output from RDA 
+#make a new df
+foo <- data.frame(do.call('rbind', strsplit(as.character(ISSJgwas$rs),'_',fixed=TRUE)))
+
+#select jus tthe first collumn which should be the snp name 
+foo$snp <-foo$X1
+
+#Select just the snp name and replace the snp name from RDA
+foo <- foo %>% 
+  dplyr::select(c("snp"))
+
+foo$snp <- as.character(foo$snp)
+
+ISSJgwas$snp <- foo$snp
+
+#data from GEMMA
+#Omit missing values in the position collumn
+ISSJgwas <-ISSJgwas[!is.na(ISSJgwas$ps),] 
+
+#manually set the chromosome order
+chrom <- as.data.frame( c("1", "1A", "2", "3", "4", "4A", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15","17","18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "Un", "Z")) 
+names(chrom)[1] <- "chr"
+
+#order by the chromosomes then position
+ISSJgwas <- left_join(chrom, ISSJgwas, by="chr") 
+
+
+##Select just the collumns of interest, the SNP, Chromosome (in this case scaffold), and position 
+ISSJgwas <- ISSJgwas %>% 
+  dplyr::select("chr", "snp", "ps","pvalue.adj")
+
+ISSJgwas$BP <- seq.int(nrow(ISSJgwas)) #create a sequential order of "base pair"
+
+ISSJgwas <- na.omit(ISSJgwas)
+
+ISSJgwas <- ISSJgwas[!duplicated(ISSJgwas$snp),] #remove duplicates
+
+
+#prepare the X axis. We do not want to display the cumulative position of SNP in bp, but just show the chromosome name instead.
+
+axisdf <- ISSJgwas %>%
+  group_by(chr) %>% 
+   dplyr::summarize(center=(max(BP) + min(BP) ) / 2 )
+
+
+axisdf <- left_join(chrom,axisdf, by="chr")
+
+
+blackgrey <- as.data.frame(c( "black", "grey" , "black" ,"grey" ,"black", "grey","black" ,  "grey" , "black", "grey" , "black", "grey" , "black", "grey"  ,"black" ,"grey" , "black", "grey", "black",  "grey", "black", "grey",  "black" ,"grey",  "black", "grey", "black","grey","black", "grey", "black"))
+names(blackgrey)[1] <- "chr_color"
+
+blackgrey <-cbind(blackgrey, chrom)
+
+ISSJgwas<- left_join(ISSJgwas,blackgrey, by="chr")
+
+#remove the unknown chromosome label 
+labstest <- as.data.frame( c("1", "1A", "2", "3", "4", "4A", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15","17", "18", "19", "20", "21", "22", "23", "24", "", "26", "", "28", "", "Z")) 
+
+ names(labstest)[1] <- "chr"
+
+
+#Make the plot and highlight the SNPs that are associated with known genes and make a table showing which ones were shared beteen the two analyses. Because I already have a trait known to differ between habitats (bill length), having a list of candidates associated with that trait specifically will focuses the study and questions rather than doing broad outlier scans.
+
+#like this
+outliers <- ISSJgwas %>% 
+  filter(ISSJgwas$pvalue.adj<alpha)
+
+
+# lable the snps that have some bill morphology association 
+#first take the annotation information and merge with the original GWAS file to get the positional information 
+
+pos.info <- pos.info %>% 
+  dplyr::rename("ZFPosition"="ZFPOS")
+
+gemma.bill.lables <- left_join(bill.genes.merged, pos.info, by="ZFPosition") 
+
+#filter out missing values in the GEMMA collumn to just focus on those SNPs
+gemma.bill.lables <-gemma.bill.lables[!is.na(gemma.bill.lables$GEMMA),]
+
+# just select the gene name and zf position to merge with manhattan plot data 
+# gemma.bill.lables <-gemma.bill.lables %>% 
+#   dplyr::select("ZFPosition","Gene") %>% 
+#   rename("Gene"="Gene_Name") %>% 
+#   rename("ZFPosition"="ps")
+
+
+
+#get the bp and p value information 
+
+#billmorph <- left_join(gemma.bill.lables, ISSJgwas, by="ps")
+
+ylab <- 'GEMMA -log10(p [adj])'
+
+##make manhattan plot
+manplot_GEMMA <- ggplot(ISSJgwas,aes(x=BP, y=-log10(pvalue.adj))) +
+    geom_point(aes(colour = chr_color), data=ISSJgwas, size=4)+
+    scale_colour_manual(values = c("black", "grey"))+
+  scale_x_continuous(labels=labstest$chr, breaks=axisdf$center, expand = c(0.02,0.002))  +
+  #geom_point(data=billmorph, aes(x=BP, y=-log10(pvalue.adj)), color="red", size=3)+
+  scale_y_continuous(expand = c(0, 0.25) ) +     # remove space between plot area and x axis
+  geom_hline(yintercept=-log10(0.05), linetype="dashed", color = "black", size=1) +
+  labs(x= "Chromosome", y="GEMMA -log10(padj)") +
+  #geom_label_repel(data=billmorph, aes(label=Gene_Name), size=4, nudge_y = .2, fontface = 'bold', segment.size = 1) +
+theme_few() +
+  theme(legend.position="none", 
+        axis.text.x = element_text(angle = 90, face="bold", size=11), 
+        axis.text.y = element_text( face="bold", size=11),
+        axis.line = element_line(colour = "black"),
+        axis.title=element_text(colour="black", size = 16,face="bold"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    panel.background = element_blank())
+
+manplot_GEMMA
+
+
+```
+
+
+
+```{r}
+############################################
+### Manhattan Plot of RDA results 
+###
+##############################################
+
+
+# lable the snps that have some bill morphology association 
+#first take the annotation information and merge with the original GWAS file to get the positional information 
+
+rda_pos <- rda_pos %>% 
+  dplyr::rename("ZFPosition"="ZFPOS" )
+
+#filter to just the bill candiates based on the GO search
+bill.cand <- c("ALDH1A2", "AKAP13","IQGAP3", "COL14A1", "COL18A1", "IGF1R","IQCB1",
+"IQGAP3","MEF2D","MFNG","PPP3CB","SMURF1","STK39","TRIM33", "FN1", "MFNG")
+
+rda.bill.lables <- bill.genes.merged.rda %>% 
+  filter(Gene_Name %in% bill.cand) 
+
+rda.bill.lables <- left_join(rda.bill.lables, rda_pos , by="ZFPosition")
+
+rda.bill.lables <- rda.bill.lables %>% 
+  dplyr::rename("abs_loading"="abs_loading.x",
+               "POS"="POS.x")
+
+#Remove duplicate snps 
+rda.bill.lables <- rda.bill.lables[!duplicated(rda.bill.lables$POS),] %>%  #remove duplicate snps
+ dplyr::filter(abs_loading > 0.07)
+
+#color scheme to delineate chromosomes. Easier to just create a bianary color scheme on the data set and then color by that factor
+
+rda_ann<- left_join(rda_pos,blackgrey, by="chr")
+
+
+#find the middle of the chromosome so snps will be centered
+axisrda <- rda_ann %>%
+  group_by(chr) %>% 
+   dplyr::summarize(center=( max(BP) + min(BP) ) / 2 )
+
+axisrda <- left_join(blackgrey,axisrda, by="chr") #make sure axes are in the correct order 
+
+rda_pos <- rda_pos[!duplicated(rda_pos$snp),] #remove duplicate snps
+
+rda_pos <- left_join(rda_pos, axisrda, by="chr")
+
+
+#create a subset of the SNPs that were shared between the RDA-GWAS and RDA-GEA
+
+
+
+shared_genes_rda_lables <- rda.bill.lables %>% 
+  dplyr::filter(Gene_Name=="IGF1R" | Gene_Name== "PPP3CB" | Gene_Name== "COL14A1")
+
+
+#find the value for 2.5 s.d from mean for the mahattan plot's alpha line
+
+loading_mean <- mean(rda_pos$abs_loading, na.rm=T)
+
+rda.alpha <- loading_mean+(2.5*sd(rda_pos$abs_loading, na.rm=T))
+
+
+manplot_RDA <- ggplot(rda_pos, aes(x=BP, y=abs_loading)) +
+    geom_point(aes(colour = chr_color), size=4,data=rda_pos)+
+    scale_colour_manual(values = c("black", "grey"))+
+ scale_x_continuous(labels=labstest$chr, breaks=axisrda$center, expand = c(0.01,0.002))  +
+  scale_y_continuous()+  
+  geom_hline(yintercept=rda.alpha, linetype="dashed", color = "black", size=1) +
+  geom_point(data=rda.bill.lables, aes(x=BP, y=abs_loading), color="red", size=4)+
+     labs(x= "Chromosome", y="RDA Absolute Loading Values") +
+ # geom_label_repel(data=rda.bill.lables, aes(label=Gene_Name), size=4, nudge_y = .005,fontface = 'bold', segment.size = 1) + #comment out the lables after saving a copy and add the lables by hand
+  geom_point(data=shared_genes_rda_lables, aes(x=BP, y=abs_loading), color="red", size=4)+
+  theme_few() +
+theme(legend.position="none", 
+        axis.text.x = element_text(angle = 90, face="bold", size=11), 
+        axis.text.y = element_text( face="bold", size=11),
+        axis.line = element_line(colour = "black"),
+        axis.title=element_text(colour="black", size = 16,face="bold"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    panel.background = element_blank())
+
+manplot_RDA
+
+
+```
+
+
+```{r}
+############################################
+### Manhattan Plot of GEA results 
+###
+##############################################
+
+
+#Load the data from the gea results
+GEA.pos.info <-read.csv("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/gwas_results/GEA_pos_info.csv")
+
+
+#change the name in ZFCHROM 
+GEA.pos.info$chr <- gsub("Chr_*","",GEA.pos.info$ZFCHROM) 
+
+#merge the gene name info 
+
+GEA.ann <- GEA.ann %>% 
+  dplyr::rename( "Gene_Name"="entrezgene_accession")
+
+GEA.gene <- GEA.ann[c(2,9)] 
+
+
+GEA.pos.info <- left_join(GEA.pos.info, GEA.gene, by="ZFPOS")
+
+ #color scheme to delineate chromosomes. Easier to just use the previous bianary color scheme on the data set and then color by that factor
+GEA.pos.info<- left_join(blackgrey, GEA.pos.info,  by="chr")
+
+GEA.pos.info <- GEA.pos.info[!duplicated(GEA.pos.info$snp),] #remove duplicate snps
+
+GEA.pos.info$BP <- seq.int(nrow(GEA.pos.info)) #create a sequential order of "base pair"
+
+
+#find the middle of the chromosome so snps will be centered
+axisgea <- GEA.pos.info %>%
+  group_by(chr) %>% 
+   dplyr::summarize(center=( max(BP) + min(BP) ) / 2 )
+
+
+
+axisgea <- left_join(blackgrey, axisgea, by="chr") #make sure axes are in the correct order 
+
+
+
+GEA.pos.info <- left_join(axisgea,GEA.pos.info,  by="chr")
+
+GEA.pos.info <- GEA.pos.info %>% 
+  dplyr::select(! "chr_color.y") %>% 
+  dplyr::rename("chr_color"="chr_color.x")
+
+#find the value for 2.5 s.d from mean for the mahattan plot's alpha line
+
+loading_mean <- mean(GEA.pos.info$abs_loading, na.rm=T)
+
+
+
+gea.alpha <- loading_mean+(2.5*sd(GEA.pos.info$abs_loading, na.rm=T))
+
+
+#add the gene information by making sure the names match and then joining to the positional informaiton
+
+
+
+#filter to just the bill candiates based on the GO search
+bill.cand.gea <- c("ADGRA2","BMP15","COL14A1","FRS3","IGF1R","JADE2",
+"JAM3","KIRREL3","LPAR1","PBX1","PPP3CB",'STK40',"TAFA4","TBX3","TP63",'TRABD2B',
+"TSPEAR","VAV2","KIRREL3","HSPA2")
+
+
+gea.bill.lables <- GEA.pos.info %>% 
+  filter(Gene_Name %in% bill.cand.gea) 
+
+gea.bill.lables <- left_join(gea.bill.lables, GEA.pos.info, by="ZFPOS")
+
+gea.bill.lables <- gea.bill.lables %>% 
+  dplyr::rename("abs_loading"="abs_loading.x",
+               "POS"="POS.x",
+                "Gene_Name"="Gene_Name.y",
+               "BP"="BP.y")
+
+#Remove duplicate snps in the lables by selecting the outliers then by duplicates
+#note by doing this we are filtering out some of the genes flagged by the gea as being under weak or moderate selection, so we are biasing ourselves a bit by going for only the snps with evidence as being under strong selection for this visualization. We talk about them in the tables thoguh, so the information is still there
+
+gea.bill.lables <- gea.bill.lables %>% 
+ dplyr::filter(abs_loading > gea.alpha)
+
+gea.bill.lables <- gea.bill.lables[!duplicated(gea.bill.lables$Gene_Name),] #remove duplicate gene_names
+
+
+#create a subset of the SNPs that were shared between the RDA-GWAS and RDA-GEA
+
+
+shared_genes_gea_lables <- gea.bill.lables %>% 
+  dplyr::filter(Gene_Name=="IGF1R" | Gene_Name== "PPP3CB" | Gene_Name== "COL14A1")
+
+shared_genes_gea_lables <- shared_genes_gea_lables[!duplicated(shared_genes_gea_lables$Gene_Name ),] #remove duplicate gene lables 
+
+
+
+#plot out the gea snps
+manplot_GEA <- ggplot(GEA.pos.info, aes(x=BP, y=abs_loading)) +
+    geom_point(aes(colour = chr_color), size=4, data=GEA.pos.info)+
+    scale_colour_manual(values = c("black", "grey"))+
+ scale_x_continuous(labels=labstest$chr, breaks=axisgea$center, expand = c(0.01,0.002))  +
+    scale_y_continuous()+  
+  geom_hline(yintercept= gea.alpha, linetype="dashed", color = "black", size=1) +
+     labs(x= "Chromosome", y="RDA Absolute Loading Values (GEA)") +
+  theme_few() +
+     # geom_label_repel(data=gea.bill.lables, aes(label=Gene_Name), size=4, nudge_y = .005,fontface = 'bold', segment.size = 1) +
+  geom_point(data=gea.bill.lables, aes(x=BP, y=abs_loading), color="red", size=4)+
+    geom_point(data=shared_genes_gea_lables, aes(x=BP, y=abs_loading), color="red", size=4)+
+theme(legend.position="none", 
+        axis.text.x = element_text(angle = 90, face="bold", size=11), 
+        axis.text.y = element_text( face="bold", size=11),
+        axis.line = element_line(colour = "black"),
+        axis.title=element_text(colour="black", size = 16,face="bold"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    panel.background = element_blank())
+
+manplot_GEA
+
+```
+
+304- Merge_GWAS
+		Description: Merge the SNPs flagged by all GWAS tests in R using dplyr to identify the SNPs flagged by multiple tests. 
+		Associated Data: SNPs lists from MRMLM, GEMMA, and RDA
+		Figures & Results: determine which SNPs occur in RDA and both GWAS programs that relate to environment and bill morphology. Manhattan plot illustrating where these SNPs are on the Genome using chromosome coordinates from N. Chen 
+
+
+```{r}
+
+
+###########################
+# Snps list             ###
+###########################
+
+#rename collumns of the genes list from the RDA and GEMMA to merge with the GEA data 
+
+RDA.ann.genes <- RDA.ann 
+
+Gemma.ann.gene <- Gemma.ann
+
+Gemma.ann.gene <- Gemma.ann.gene %>% 
+  dplyr::rename("ZFPOS"="start")
+
+
+Gemma.ann$start <- as.integer(Gemma.ann$start)
+
+
+#count how many candidates from the two GWAS test
+
+total <- as_tibble(rda.pos.info$ZFPOS)
+
+total$test <- "RDA"
+
+total <- total %>% 
+  dplyr::rename("ZFPOS"="value")
+
+Gwas.snps<-  as_tibble(outliersnares.adj$ZFPOS) %>% 
+  dplyr::rename("ZFPOS"="value")
+
+Gwas.snps$test <- "GEMMA"
+
+total <- rbind(Gwas.snps, total)
+
+
+sharedsnps <- total[!duplicated(total$ZFPOS),] #remove duplicates
+
+
+
+sharedsnps<- left_join(RDA.ann, Gemma.ann, by = "start", keep_all=T)
+dim(sharedsnps) #1091   27
+
+sharedsnps <- sharedsnps[!duplicated(sharedsnps$start),] #remove duplicates
+
+dim(sharedsnps) 
+
+
+
+#Check to see how many snps are shared with the GEA results
+#load the GEA snp candidates
+
+
+GEAsnps <- GEA.ann
+
+
+#filter to just the position name and 
+#merge with the shared snps list and the outliers 
+
+sharedsnps <- sharedsnps %>% 
+  dplyr::rename("ZFPOS"="start")
+
+bill_habitat_snps <- full_join(sharedsnps, GEAsnps, by = "ZFPOS", keep_all=T) 
+
+
+
+bill_habitat_snps <- bill_habitat_snps[!duplicated(bill_habitat_snps$ZFPOS),] #remove duplicates
+
+
+#with the outliers, it looks like there are 5 snps that are shared between bill morphology and habitat composition 
+
+
+# merge the shared snps with gene information
+ #count how many matches between the candidates from the two GWAS test
+
+RDA.ann.genes <- RDA.ann.genes %>%
+  dplyr::rename("ZFPOS"="start")
+
+sharedsnps_ann<- merge(outliersnares.bedops, RDA.ann.genes, by = "ZFPOS", keep_all=T)
+dim(sharedsnps_ann) 
+
+sharedsnps_ann <- sharedsnps_ann[!duplicated(sharedsnps_ann$ZFPOS),] #remove duplicates
+
+dim(sharedsnps_ann) # 0 annotated snps
+
+
+
+
+```
+
+
+
+
+

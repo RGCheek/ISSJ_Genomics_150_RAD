@@ -1,0 +1,710 @@
+---
+title: "001-bioinformatics_scripts"
+author: "Rebecca Cheek"
+date: "2/5/2020"
+output: html_document
+---
+
+
+These data are comprised of 152, adult, male Island Scrub Jays (*Aphelocoma insularis*) from across Santa Cruz Island, California. 
+Sample size is:
+
+Western Oak  = 39
+Central Oak = 60
+Eastern Oak = 12
+Western Pines = 25
+Central Pines = 7
+Eastern Pines = 9
+
+**001- Process Radtags** 
+
+**Description**: De-multiplex raw reads from sequencer by individual barcodes
+**Associated Data**: Raw reads, barcode files for the 2 libraries. Output: processed fastq.gz 
+
+
+Be sure to edit the header of each script for your own system to run it as a job. Here is mine as an example:
+
+#!/bin/bash
+
+#SBATCH --job-name=process_radtags
+#SBATCH --output=/home/cheek/scratch_dir/ISSJs-genomics/process_samples/process_radtags.out
+#SBATCH --error=/home/cheek/scratch_dir/ISSJs-genomics/process_samples/process_radtags.err
+#SBATCH --mail-user=Rebecca.G.Cheek@gmail.com
+#SBATCH --mail-type=END
+#SBATCH --mem=10G
+
+Because some of the barcodes overlap, the process_radtags function from Stacks (v.2.53) needs to be run twice to demultiplex the two libraires.
+
+
+Run the script for the first 72 individuals in Library 1. 
+
+Options include:
+-e ; enzyme used
+
+-c ; clean data, remove any read with an uncalled base
+-q ; discard reads with low quality scores
+-r ; rescue barcodes and radtags
+-E ; specify how quality scores are recorded 'phred33' (Illumina 1.8+/Sanger, default)
+
+
+Filename for the script: "01-process_radtags.sh"
+
+```{sh}
+#!/bin/bash
+
+#SBATCH --job-name=process_radtags_Lib1
+#SBATCH --output=/home/cheek/scratch_dir/ISSJs-genomics/process_samples/process_radtags.out
+#SBATCH --error=/home/cheek/scratch_dir/ISSJs-genomics/process_samples/process_radtags.err
+#SBATCH --mail-user=Rebecca.G.Cheek@gmail.com
+#SBATCH --mail-type=END
+#SBATCH --mem=10G
+
+process_radtags \
+-p /home/cheek/scratch_dir/ISSJs-genomics/raw/rawdata_Lib_1 \
+-b /home/cheek/scratch_dir/ISSJs-genomics/names_change_LIB1 \
+-o /home/cheek/scratch_dir/ISSJs-genomics/process_samples/ \
+--inline_null \
+-i gzfastq \
+-y gzfastq -e 'sbfI' -c -q -r -E 'phred33'
+
+```
+
+
+Run the same code for the 80 individuals in Library 2, but need to specify that it is in a different directory 
+Filename for the script: "01.5-process_radtags2.sh"
+
+```{sh}
+
+
+#!/bin/bash
+
+#SBATCH --job-name=process_radtags_Lib2
+#SBATCH --output=/home/cheek/scratch_dir/ISSJs-genomics/process_samples/process_radtags.out
+#SBATCH --error=/home/cheek/scratch_dir/ISSJs-genomics/process_samples/process_radtags.err
+#SBATCH --mail-user=Rebecca.G.Cheek@gmail.com
+#SBATCH --mail-type=END
+#SBATCH --mem=10G
+
+process_radtags \
+-p /home/cheek/scratch_dir/ISSJs-genomics/raw/rawdata_Lib_2 \
+-b /home/cheek/scratch_dir/ISSJs-genomics/names_change_LIB2 \
+-o /home/cheek/scratch_dir/ISSJs-genomics/process_samples/ \
+--inline_null \
+-i gzfastq \
+-y gzfastq -e 'sbfI' -c -q -r -E 'phred33' 
+
+
+#note
+#count the number of readS per individual using this for loop
+#for i in `ls *.fq.gz`; do echo $(zcat ${i} | wc -l)/4|bc; done
+
+
+```
+
+
+All demultiplexed files are now in the process_samples directory. 
+
+
+Two individuals, F09-123 (Coches) & F11-023 (PZ Valley) seemed to have failed sequencing as they have extremely small file sizes. These were also the same individuals that were dropped by P. Salerno for her analysis so will leave them out by adding them to the "dropped_individuals" directory.
+
+
+Our final sampling breakdown for bioinformatics is:
+
+Western Oak  = 38
+Central Oak = 59
+Eastern Oak = 12
+Western Pines = 25
+Central Pines = 7
+Eastern Pines = 9
+
+
+
+**002-Align_BWA**
+
+**Description**: BWA is a software package for mapping low-divergent sequences against a large reference genome, BWA-MEM, which is the latest, is generally recommended for high-quality queries as it is faster and more accurate and has better performance for 70-100bp Illumina reads (our reads are 95 base pairs). Use BWA-mem to align reads to FLSJ reference genome
+**Associated Data**: De-multiplexed reads from process_radtags function from Stacks. Output bam files in the aligned_reads/bam directory
+
+In the "process_samples" directory with the de-multiplexed individual fq.gz files 
+
+```{sh}
+#!/bin/bash
+
+#SBATCH --job-name=issj_align
+#SBATCH --output=/home/cheek/scratch_dir/ISSJs-genomics/aligned_reads/issj_aligned.out
+#SBATCH --error=/home/cheek/scratch_dir/ISSJs-genomics/aligned_reads/issj_aligned.err
+#SBATCH --mail-user=Rebecca.G.Cheek@gmail.com
+#SBATCH --mail-type=END
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=6
+#SBATCH --mem=10G
+
+GENOME=/home/cheek/scratch_dir/ISSJs-genomics/reference_genome/final.assembly.fasta.gz
+BAMOUT=/home/cheek/scratch_dir/ISSJs-genomics/aligned_reads/bam
+REPORTOUT=/home/cheek/scratch_dir/ISSJs-genomics/aligned_reads/reports
+
+for sample in `ls *.fq.gz`    #List all fq.gz files in the folder and for each of these file run through the for loop
+do
+    bwa mem -t 6 \            #
+    $GENOME $sample | \       # Align all the files
+    samtools view -bhS - | samtools sort -o $BAMOUT/$sample.bam  #convert the SAM to BAM
+    samtools flagstat $BAMOUT/$sample.bam &> $REPORTOUT/$sample.stats #Get report
+done
+
+
+#Rename the files to not have the fq.gz extension in the bam file name
+#I used this command
+#for i in  *.bam ; do     mv $i $(echo $i | sed "s/.fq.gz//g"); done
+#which is not the cleanest way to do things but it worked
+
+```
+
+
+**003-ref_map** 
+**Description**: Program will execute Stacks pipeline to genotype and call SNPs using the population-wide data per locus. Makes use of the population map to specify all the samples in an analysis and determine which groupings to use for calculating summary statistics. 
+**Associated Data**: aligned bam files & populations map on only 1 population specified "SCI". Output stacks files
+
+
+**004-populations**
+**Description**: Stacks, through the populations program, is able to export data for a wide variety of downstream analysis programs. Will use to randomly select one SNP from each contig and export to VCF format for filtering in PLINK
+**Associated Data**: ref_mapped stacks files of randomly selected SNPs. Output VCF & PLINK
+
+
+```{sh}
+#!/bin/bash
+#SBATCH --job-name=issj_ref_map
+#SBATCH --output=/home/cheek/scratch_dir/ISSJs-genomics/ref_map_SCI/ref_map.out
+#SBATCH --error=/home/cheek/scratch_dir/ISSJs-genomics/ref_map_SCI/ref_map.err
+#SBATCH --mail-user=Rebecca.G.Cheek@gmail.com
+#SBATCH --mail-type=END
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=10G
+
+ALIGNED=/home/cheek/scratch_dir/ISSJs-genomics/aligned_reads/bam/ 
+POPMAP=/home/cheek/scratch_dir/ISSJs-genomics/popmap_all     #Popualtion map that lists all individuals as the same popaultion
+REFOUT=/home/cheek/scratch_dir/ISSJs-genomics/ref_map_SCI/ref_map_SCI_out
+
+
+ref_map.pl -T 8 --popmap $POPMAP -o $REFOUT --samples $ALIGNED -X "populations: --fstats --plink --vcf"  #Run the pipeline and include -X option to have popualtions program randomly select a SNP from each contig and write the output to vcf and plink format for further filtering
+
+
+#23015 varitable sites retained after populations
+
+
+```
+
+
+
+**005-WHOA**
+**Description**: Custom tool from E. Anderson [github](https://github.com/eriqande/whoa) to investigate the distribution of genotypes in GBS data where they expect (by and large) Hardy-Weinberg equilibrium, in order to assess heterozygote miscall rates (rates at which true heterozygotes are incorrectly called as homozygotes) prevalent in some RAD-seq data sets. 
+**Associated Data**: vcfR object. You can make such an object yourself by reading in a VCF file using vcfR::read.vcfR()
+	Results: Better sense of what the miscall rate could be in the dataset and how much that may limit inference in downstream analyses. 
+	
+ 
+```{r}
+library(tidyverse)
+library(whoa)
+library(vcfR)
+
+
+v <- read.vcfR("data/populations.snps.raw.vcf")
+
+gfreqs <- exp_and_obs_geno_freqs(v)
+
+
+geno_freqs_scatter <- function(gfc, alpha = 0.2, max_plot_loci = 500) {
+  
+  snps <- unique(gfc$snp)
+  if(length(snps) > max_plot_loci) {
+    ss <- sample(x = snps, size = max_plot_loci, replace = FALSE)
+  } else {
+    ss <- snps
+  }
+  g <- ggplot2::ggplot(gfc %>% dplyr::filter(snp %in% ss) , ggplot2::aes(x = p_exp, y = p_obs, colour = z_score)) +
+    ggplot2::geom_jitter(alpha = alpha, position = ggplot2::position_jitter(width = 0.01, height = 0.01)) +
+    ggplot2::facet_wrap(~ geno, nrow = 1) +
+    ggplot2::geom_polygon(data = geno_freq_boundaries(), fill = NA, linetype = "dashed", colour = "black") +
+    ggplot2::geom_abline(slope = 1, intercept = 0, linetype = "solid") +
+    scale_color_viridis_c()
+  
+  g
+  
+}
+
+
+geno_freqs_scatter(gfreqs, alpha = 0.04, max_plot_loci = 1e15)  
+
+#estimate the heterozygote miscall rate
+overall <- infer_m(v, minBin = 100) ##number of bins based on max read depth of 64
+
+#look at the output
+overall$m_posteriors   #Average miscall rate of 2.1% 
+
+binned <- infer_m(v, minBin = 100) ##number of bins based on max read depth of 64 
+
+posteriors_plot(binned$m_posteriors) #miscall rates appear to be about 12% at the low read depths. Will need to filter those out by setting the min read coverage to 
+
+```
+Looks like heterozygous miscall rates are <5%. But looking at the z score figure there are some problamatic loci that need to be filtered out. 
+
+
+
+
+**005-VCFtools**
+**Description**: Export data for 012 format for geoscapeRtools filtering tests 
+**Associated data**: vcf file. Output 012 file. 
+
+```{sh}
+vcftools --vcf  populations.snps.vcf --out issj_filter_tests --012
+
+```
+
+
+
+
+**006-genoscape_R_tools**
+**Description**: Genoscape R tools is a series of utilities created by Eric Anderson which help investigate the amount of missing data in the SNP matrix to visualize where a good cutoff might be for filtering to maximize SNPs and individuals in dataset.  https://github.com/eriqande/genoscapeRtools
+**Associated Data**: 012 Files from vcf tools. Output: test filtering regimes
+
+```{r}
+
+#Notice that the actual "012" file itself has been gzipped to save space.
+#The latest version of this package allows that (so long as you are on a system like Unix...)
+
+#First we gotta load the libraries we will need:
+  
+library(genoscapeRtools)
+library(readr)
+library(SNPRelate)
+
+
+#Reading data in
+#There's a function for that
+
+issj <- read_012(prefix = "issj_filter_tests", gz = FALSE)
+ 
+
+#doing missing data calcs
+#We can do this in a locus centric or an individual centric manner. Here we first do it in an indiv-centric way:
+
+indv <- genoscapeRtools::miss_curves_indv(issj)
+
+indv$plot
+
+
+
+loci <- miss_curves_locus(issj)
+loci$plot+
+  xlim(0,23020)+
+  ylim(.5,1)
+
+#Pulling out the data
+#So, in theory, if we look at this and decide that we want to keep 135  
+#individuals and roughly 18500 positions, we should be able to do so in such a way 
+#that we have no individuals with more than about 25% missing data, and no loci that should have more than 20% missing data.
+
+#Let's see:
+
+dir(pattern="cleaned_indv")
+
+clean <- miss_curves_indv(issj, clean_pos = 18500, clean_indv = 135)  
+#> Picking out clean_pos and clean_indv and writing them to cleaned_indv135_pos4800.012
+#We can make a picture of the result
+
+clean$plot
+
+#we can read the "clean" file back in
+issj_clean <- scan_012("./cleaned_indv135_pos18500", gz=FALSE, gzpos = FALSE, posfile_columns = 2)
+
+#and then look at the distribution of missing data to make sure it matches what the plots estimated
+issj_clean_miss <- issj_clean == -1
+dim(issj_clean)
+dim(issj_clean_miss)
+missing_perc_in_indiv <- rowSums(issj_clean_miss) / ncol(issj_clean_miss)
+missing_perc_in_loci <- colSums(issj_clean_miss) / nrow(issj_clean_miss)
+
+par(mfrow=c(1,2))
+hist(missing_perc_in_indiv, main =  "Individuals") #these would be able to show you if you need to drop some individulas from above issj_clean
+hist(missing_perc_in_loci, main= "Positions") ##looking at hist to see how you can adjust individuals 
+
+#calculate heterozysoity per individual
+ 
+issj_hets <- issj_clean == 1
+issj_per_in_loci <- colSums(issj_hets) / nrow(issj_hets)
+issj_per_in_indiv <- rowSums(issj_hets) / ncol(issj_hets)
+
+
+par(mfrow=c(1,2))
+hist(issj_per_in_indiv, main =  "Individuals") #individuals look normally distributed with no one exceeding .75 missingness
+hist(issj_per_in_loci, main= "Positions") #looks like there is a long tail in SNPs which is due to slightly relaxed filter in on individuals. The tail gets less pronounced if the filter is restricted to 20% for individuals 
+  
+
+#Can check to see which insidivuals and snps are dropped in the filtering 
+het_remove_het <- issj_clean[,issj_per_in_loci < 0.5]
+het_remove_het <- issj_clean[, issj_per_in_indiv < 0.5] #individual dist of missingness is fairly normal, so this isn't critical
+
+dim(het_remove_het)
+
+#option to write it as a table 
+#write.table(missing_data,file=het_remove_het)
+
+#figure out which individuals are dropped in filtering 
+unclean <- as_tibble(rownames(issj))
+
+clean <- as_tibble(rownames(het_remove_het))
+
+removed_indiv <- anti_join(unclean, clean, by="value")
+
+#potential dropped individuals include 
+# 3 WO
+#1 EO
+#1 EP
+#1 WP
+#9 CO
+#so sampling distribution shouldn't be terribly affected 
+
+
+```
+
+It looks like we can retain ~ 125 individuals and keep ~ 18K SNPs do so in such a way that we have no individuals with more than about 25% missing data, and no loci that should have more than 20% missing data.
+
+
+
+**007-filtering in radiator for final SNP dataset** 
+**Description**: Based on results from GenoscaprRTools, will filter for missingness and quality for final SNP matrix. Radiator's filter_rad function provides an interactive module to explore the biology and will produce a whiltelist of markers that can be executed in populations from Stacks to create a dataset of filtered loci. 
+First need to filter out individuals based on missingness before  
+
+**Associated Data**: vcf Files from populations. Output: final SNP dataset in vcf format, but can import whitelist from radiator using just the 
+
+
+```{r}
+library(radiator)
+library(SeqArray)
+library(tidyverse)
+
+##filter testing radiator package 
+#Strata file is similar to the pop map fole for stacks. 
+#Is a tab deliminated file but requires the collumns "INDIVIDUALS" and	"STRATA"
+#make sure the strata file looks correct. We are expecting 150 individuals and one population
+radiator::summary_strata("C:/Users/Rebecca/Desktop/r_coding/data/filtered_strata.issj.tsv")
+
+#Radiator only works if run from a local directory
+#need to adjust the parallel.core setting depending on your system otherwise the package will error out. use parallel::detectCores() to see how many available cores you have, and subtract however many to have 1.
+
+#Run radiator using the raw vcf file, and take the blacklist of individuals based on misingness and duplicate genomes and remove them from the popmap to filter them out in popualtions. using this command populations -P ./ -M ./popmap_124_indiv -O ./populations_124_indiv
+issj_radiator <- radiator::filter_rad(
+     data = "C:/Users/Rebecca/Desktop/r_coding/data/data/populations.snps.names.vcf",
+     strata = "C:/Users/Rebecca/Desktop/r_coding/data/data/strata.issj.tsv", 
+     interactive.filter=T,
+     output="vcf",
+     parallel.core = parallel::detectCores() - 3)
+
+
+#filter strata file to just include the whitelist of individuals
+strata <- read_tsv("C:/Users/Rebecca/Desktop/r_coding/data/strata.issj.tsv")
+
+
+issj_filtered <- read.csv("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/issj_filtered.csv") %>% 
+  dplyr::rename("INDIVIDUALS"="tissue_number") 
+
+filtered_strata <- anti_join(strata, issj_filtered,  by="INDIVIDUALS")%>% 
+  dplyr::select(!"TARGET_ID")
+
+write_tsv(filtered_strata, "C:/Users/Rebecca/Desktop/r_coding/data/filtered_strata.issj.tsv")
+
+
+#can then re-run the dataset of filtered individuals and then focus on filtering genotypes. Look at ISSJ_radiator-screen-output_123indiv in the log files directory for the 
+#specific parameters and resulting number of SNPs
+#note this only works if:
+# you have a fresh R session with only radiator and SNPArray packages loaded
+#PCs have issues with parallel processing so just have 1 or 1L selected for parallel.core
+#Only works if you run in a seperate r script (not markdown) and is run from a local directory
+#
+
+issj_radiator <- radiator::filter_rad(
+     data = "C:/Users/Rebecca/Desktop/r_coding/data/populations.123indiv.snps.vcf",
+     strata = "C:/Users/Rebecca/Desktop/r_coding/data/filtered_strata.issj.tsv", 
+     interactive.filter=TRUE,
+     output="vcf",
+     parallel.core = 1)
+
+
+
+```
+
+```{sh}
+#Radiator is buggy with different outputs. Its easier to import the filtered vcf into popualtions without additional parameters to then produce the different files needed. 
+
+#example
+populations -V ./radiator_data_20200707\@2117.vcf  ./ --plink --structure
+
+#additional files (such as .bed files) can then be produced in PLINK
+
+plink --file issj_radiator_data --make-bed --allow-extra-chr
+
+```
+
+
+**WHOA**
+  Option to check how the filtered VCF from ratiator looks compared to the unfiltered dataset. 
+
+ 
+```{r}
+library(tidyverse)
+library(readr)
+library(whoa)
+library(vcfR)
+
+
+v <- read.vcfR("C:/Users/Rebecca/Desktop/r_coding/data/filter_rad_124_final/14_filtered/radiator_data_20200706@1554.vcf")
+
+gfreqs <- exp_and_obs_geno_freqs(v)
+
+
+geno_freqs_scatter <- function(gfc, alpha = 0.2, max_plot_loci = 500) {
+  
+  snps <- unique(gfc$snp)
+  if(length(snps) > max_plot_loci) {
+    ss <- sample(x = snps, size = max_plot_loci, replace = FALSE)
+  } else {
+    ss <- snps
+  }
+  g <- ggplot2::ggplot(gfc %>% dplyr::filter(snp %in% ss) , ggplot2::aes(x = p_exp, y = p_obs, colour = z_score)) +
+    ggplot2::geom_jitter(alpha = alpha, position = ggplot2::position_jitter(width = 0.01, height = 0.01)) +
+    ggplot2::facet_wrap(~ geno, nrow = 1) +
+    ggplot2::geom_polygon(data = geno_freq_boundaries(), fill = NA, linetype = "dashed", colour = "black") +
+    ggplot2::geom_abline(slope = 1, intercept = 0, linetype = "solid") +
+    scale_color_viridis_c()
+  
+  g
+  
+}
+
+
+geno_freqs_scatter(gfreqs, alpha = 0.04, max_plot_loci = 1e15)  
+
+
+```
+  
+
+
+**09- Filter to just the neutral SNPs by removing outliers flagged by PCAdapt** 
+	**Description**: PCAdapt uses Principal Components Analysis (PCA) to identify loci showing strong signatures of selection relative to neutral background genomic variation. Identify putatively adaptive outlier loci using a false discovery rate of 10% and filter these outliers out for downstream landscape genomic analyses to avoid confounding neutral demographic patterns with patterns generated by loci under selection.
+**Associated Data**: convert vcf file from radiator to PLINK bed file since converter vcf to pcadapt is deprecated in PCAdapt. 
+		**Results**: list of outlier loci that can be removed from the whitelist produced by radiator to create a secondary "neutral loci" dataset by re-running populations with neutral whitelist
+
+
+```{r}
+
+#####################################
+#PCAdapt to find outlier SNPs
+#############################
+library(pcadapt)
+library(caroline)
+library(qvalue)
+
+issj.pcadapt <- read.pcadapt("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/Filtered_Data/All_SNPs/issj_radiator_data.bed",type="bed")
+
+#Choose the appropriate K value from scree plot, run PCAdapt, and get summary.
+#in this case we are treating all individuals as one popualtion so K=1
+
+x <- pcadapt(issj.pcadapt,K=1)
+summary(x)
+
+#A Manhattan plot displays log10 of the p-values.
+
+plot(x,option="manhattan")
+
+#Check the distribution of the p-values using a Q plot, showing the top 5% lowest p-values.
+
+plot(x,option="qqplot",threshold=0.05) #looks like there are 3 potential outliers 
+
+#Use q histogram of p-values to confirm that most of the p-values follow the uniform distribution,
+#and that there is an excess of small p-values indicating the presence of outliers.
+
+hist(x$pvalues,xlab="p-values",main=NULL,breaks=50)
+
+#For a given ± (number between 0 and 1), SNPs with q-values less than alpha will be considered outliers with an expected false discovery rate bounded by Î±. 
+#The false discovery rate is defined as the percentage of false discoveries expected among the list of outlier candidate SNPs.
+
+
+qval <- qvalue(x$pvalues)$qvalues
+
+#provide a list of candidate SNPs with an expected false discovery rate less than 15%. After runnign with a FDR of 10% it flagged 1 outlier, but then flagged two more after removeing it, so will just increase it to 15% to removes all outliers flagged. 
+
+alpha <- 0.10
+outliers <- which(qval<alpha)
+outliers #one oulier (variant # 1515) that appear to be significantly differentiated
+outliers <- as_tibble(outliers, quote=F)
+
+#note that PCAdapt outputs the "order" of the loci rather than the IDs of the loci themselves, so to exclude the outlier for our popstats calculations in populations we need to generate a whitelist that can be read by popualitons. For subsequent analyses, we can remove the outlier loci by hand in text eidtor since there is only one. Just need to add 10 to incorporate the header. So line, 1525
+
+#make sure variants are removed from the neutral vcf 
+
+
+issj.pcadapt <- read.pcadapt("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/Filtered_Data/Neutral_SNPs/radiator_data_neutral.vcf",type="vcf")
+
+
+#Choose the appropriate K value from scree plot, run PCAdapt, and get summary.
+#in this case we are treating all individuals as one popualtion so K=1
+
+x <- pcadapt(issj.pcadapt,K=1)
+summary(x)
+
+#A Manhattan plot displays log10 of the p-values.
+
+plot(x,option="manhattan")
+
+
+#Check the distribution of the p-values using a Q plot, showing the top 5% lowest p-values.
+
+plot(x,option="qqplot",threshold=0.05)
+
+#Use q histogram of p-values to confirm that most of the p-values follow the uniform distribution,
+#and that there is an excess of small p-values indicating the presence of outliers.
+
+hist(x$pvalues,xlab="p-values",main=NULL,breaks=50)
+
+#For a given ± (number between 0 and 1), SNPs with q-values less than alpha will be considered outliers with an expected false discovery rate bounded by Î±. 
+#The false discovery rate is defined as the percentage of false discoveries expected among the list of outlier candidate SNPs.
+
+
+qval <- qvalue(x$pvalues)$qvalues
+
+#provide a list of candidate SNPs with an expected false discovery rate less than 10%.
+alpha <- 0.10
+outliers <- which(qval<alpha)
+outliers 
+
+
+
+```
+
+Our final sampling breakdown for analyses is:
+
+Western Oak  = 36
+Central Oak = 42
+Eastern Oak = 10
+Western Pines = 21
+Central Pines = 6
+Eastern Pines = 8
+
+
+
+
+**010-populations_stats**
+**Description**: Import filtered vcf data from radiator to calculate population wide summary statistics using smooth options in popualitons. 
+**Associated Data**: final filtered vcf file produced by popualitons based on whitelisted individuals and loci . Output: heterozygosity, π, and FIS. See p.sumstats_summary in log files
+
+Use the whitelist from radiator, calculate popualiton summary statistics using populations in STaCKs 
+
+In the directory cantaining the catalog of raw data and calls from Stacks
+
+
+
+```{sh}
+
+#!/bin/bash
+
+#SBATCH --job-name=issj_populations
+#SBATCH --output=/home/cheek/scratch_dir/ISSJs_150/issj_populations.out
+#SBATCH --error=/home/cheek/scratch_dir/ISSJs_150/issj_populations.err
+#SBATCH --mail-user=Rebecca.G.Cheek@gmail.com
+#SBATCH --mail-type=END
+#SBATCH --ntasks=1
+
+
+populations -P ./ -t 8 -M ./popmap_123indiv_filtered -O ./ -W ./whitelist_markers_radiator_neutral --fstats --hwe -k --smooth --smooth-fstats --vcf
+
+
+
+
+```
+
+
+
+Some of out neutral popualiton genetic analyses require complete dataframes, so we will use our imputed data from BEAGLE for those analyses. Hwoever, we want to make sure there are no outliers in this dataset that could skew results
+
+```{r}
+#####################################
+#PCAdapt to find outlier SNPs
+#############################
+library(pcadapt)
+library(caroline)
+library(qvalue)
+
+  issj.pcadapt <- read.pcadapt("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/Filtered_Data/ISSJ.ZF.ordered_imputed_BEAGLE.bed",type="bed")
+
+#Choose the appropriate K value from scree plot, run PCAdapt, and get summary.
+#in this case we are treating all individuals as one popualtion so K=1
+
+x <- pcadapt(issj.pcadapt,K=1)
+summary(x)
+
+#A Manhattan plot displays log10 of the p-values.
+
+plot(x,option="manhattan")
+
+#Check the distribution of the p-values using a Q plot, showing the top 5% lowest p-values.
+
+plot(x,option="qqplot",threshold=0.05) #looks like there are 3 potential outliers 
+
+#Use q histogram of p-values to confirm that most of the p-values follow the uniform distribution,
+#and that there is an excess of small p-values indicating the presence of outliers.
+
+hist(x$pvalues,xlab="p-values",main=NULL,breaks=50)
+
+#For a given ± (number between 0 and 1), SNPs with q-values less than alpha will be considered outliers with an expected false discovery rate bounded by Î±. 
+#The false discovery rate is defined as the percentage of false discoveries expected among the list of outlier candidate SNPs.
+
+
+qval <- qvalue(x$pvalues)$qvalues
+
+#provide a list of candidate SNPs with an expected false discovery rate less than 15%. After runnign with a FDR of 10% it flagged 1 outlier, but then flagged two more after removing it, so will just increase it to 15% to removes all outliers flagged as a shortcut. 
+
+alpha <- 0.15
+outliers <- which(qval<alpha)
+outliers #three oulier (variant #s 1195 1430 1527) that appear to be significantly differentiated
+
+
+#note that PCAdapt outputs the "order" of the loci rather than the IDs of the loci themselves, so to exclude the outlier for our popstats calculations in populations we need to generate a whitelist that can be read by popualitons. For subsequent analyses, we can remove the outlier loci by hand in text eidtor since there is only one. Just need to add 10 to incorporate the header. So lines 1205 1439 1535 (these have -1 subtracted for each row deleted)
+
+#make sure variants are removed from the neutral vcf 
+
+
+issj.pcadapt <- read.pcadapt("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/Filtered_Data/ISSJ.ZF.ordered_imputed_BEAGLE_neutral.vcf",type="vcf")
+
+
+#Choose the appropriate K value from scree plot, run PCAdapt, and get summary.
+#in this case we are treating all individuals as one popualtion so K=1
+
+x <- pcadapt(issj.pcadapt,K=1)
+summary(x)
+
+#A Manhattan plot displays log10 of the p-values.
+
+plot(x,option="manhattan")
+
+
+#Check the distribution of the p-values using a Q plot, showing the top 5% lowest p-values.
+
+plot(x,option="qqplot",threshold=0.05)
+
+#Use q histogram of p-values to confirm that most of the p-values follow the uniform distribution,
+#and that there is an excess of small p-values indicating the presence of outliers.
+
+hist(x$pvalues,xlab="p-values",main=NULL,breaks=50)
+
+#For a given ± (number between 0 and 1), SNPs with q-values less than alpha will be considered outliers with an expected false discovery rate bounded by Î±. 
+#The false discovery rate is defined as the percentage of false discoveries expected among the list of outlier candidate SNPs.
+
+
+qval <- qvalue(x$pvalues)$qvalues
+
+#provide a list of candidate SNPs with an expected false discovery rate less than 10%.
+alpha <- 0.10
+outliers <- which(qval<alpha)
+outliers 
+
+```
+

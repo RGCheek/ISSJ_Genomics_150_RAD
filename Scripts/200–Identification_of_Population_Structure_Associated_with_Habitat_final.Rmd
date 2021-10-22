@@ -1,0 +1,844 @@
+---
+title: "200–Identification_of_multi-locus_Signatures_Associated_with_Habitat_final"
+author: "Rebecca Cheek"
+date: "7/2/2020"
+output: html_document
+---
+
+**201-RDA_habitat**
+		Description: Partial redundancy analysis implemented with the LEA R package to test multiple loci simultaneously for genetic associations with habitat type (pine vs. oak) while controlling for geographic distance using constrained orthogonal axes.  
+		Associated data: Pine & oak proportion data with approximate grouping data for the jays (western pine vs. western oak ect, based on which pine stand individuals were sampled closest to).  SNP matrix with all SNPs (neutral and outlier) 
+		Figures & Results: RDA plots showing genotypes and individual SNPs, evidence of selection between habitat types. 
+
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+################################################
+#Partial RDA
+##################################
+library(data.table)
+library(adegenet)
+library(ape)
+library("pegas")
+library("seqinr")
+library("ggplot2")
+library("hierfstat")
+library(LEA)
+library(StAMPP)
+library(dplyr)
+library(RColorBrewer)
+library(mapplots)
+library(fields)
+library(stringr)
+library(pcadapt)
+library(qvalue)
+library(ggthemes)
+library(vegan)
+library(qqman)
+library(dartR)
+library(sf)
+library(lme4)
+library(psych)
+library(sp)
+library(dartR)
+library(cowplot)
+library(parallel)
+library(biomaRt)
+library(mygene)
+library(ggpubr)
+
+
+```
+
+
+
+
+001- Impute missing data 
+
+  Because RDA and GEMMA require complete dataframes, we will impute missing data using Beagle software (B L Browning, Y Zhou, and S R Browning (2018). A one-penny imputed genome from next generation reference panels. Am J Hum Genet 103(3):338-348. doi:10.1016/j.ajhg.2018.07.015.)
+  
+```{sh}
+
+#have to use the ZEFI ordered vcf since Beagle need chromosomal coordinates 
+#Trying with Beagle
+#test to make sure it will run
+java -jar /home/cheek/scratch_dir/programs/beagle.18May20.d20.jar gt=./ISSJ.ZF.ordered.vcf out=./imputed_data/ISSJ.ZF.ordered_imputed_BEAGLE.vcf
+
+
+#then use this scrip BEAGLE_impute.sh to run through each chromosome 
+#need to adjust ne based on output from STAMPS
+#ne=<effective population size>
+# gt=<VCF file: use GT field>
+#iterations=<number of phasing iterations> 
+#gp=<print posterior genotype probabilities> 
+
+#!/bin/bash
+
+VCF=/scratch/users/cheek/programs/snpEff/ISSJ.ZF.ordered.vcf
+CHROMS="Chr_1A Chr_5 Chr_7 Chr_3 Chr_4 Chr_2 Chr_17 Chr_19 Chr_4A Chr_23 Chr_Z Chr_6 Chr_1 Chr_12 Chr_11 Chr_18 Chr_8 Chr_15 Chr_28 Chr_9 Chr_21 Chr_10 Chr_27 Chr_20 Chr_25 Chr_13 UN Chr_26 Chr_22 Chr_14 Chr_24"
+
+
+for c in $CHROMS
+do
+	OUT=/scratch/users/cheek/programs/snpEff/imputed_data/$c
+	java -jar /scratch/users/cheek/programs/beagle.5.1.jar \
+	gt=$VCF out=$OUT \
+	chrom=$c gp=true \
+	ne=370 \
+	iterations=25 
+done
+
+
+#I know there is a better way to do this but after I merged all the chromosomal vcfs using this command
+grep -v '^#' *.vcf   >> merge.vcf
+
+#The chromosome names got messed up in the vcf so for chromosome 10 for example it read 
+#"Chr_10.vcf:Chr_10"
+# Just exported the file into excel, did txt to collumns to split it at the . added the vcf header information and 
+#changed the | to a / in the genotype information
+#then copy pasted into notepad ++ to save it as ISSJ.ZF.ordered_imputed_BEAGLE which will be our merged, imputed vcf, which worked though wouldn't #recommend for a bigger file
+
+#then make a bed file for GEMMA 
+#working in the imputed_data directory 
+ 
+#first, convert VCF to plink format using populations
+populations -V ISSJ.ZF.ordered_imputed_BEAGLE.vcf -O ./ --plink
+
+#then rename the files to get reid of the annoying .p. suffix and convert to .map and .ped filed to .raw and .bed 
+
+plink --file ISSJ.ZF.ordered_imputed_BEAGLE --make-bed --recodeAD --allow-extra-chr
+
+
+
+```
+  
+
+``` {r}
+
+#read in and convert genomic data using the .raw Plink file thats been imputed
+
+gen <- read.PLINK("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/Filtered_Data/ISSJ.ZF.ordered_imputed_BEAGLE.raw", parallel = F)
+
+dim(gen)
+#123 6690
+# so  822870 total
+
+#RDA require complete data frames (i.e., no missing genetic data). 
+#convert to a data frame
+gen.imp <- as.data.frame(gen)
+
+#confirm there is no missing data in the imputed data
+sum(is.na(gen.imp)) 
+#58130 in the non-imputed data frame
+#0 in the imputed data
+
+
+#Quick and dirty option to impute with the most common genotype
+#gen.imp <- apply(gen.imp, 2, function(x) replace(x, is.na(x), as.numeric(names(which.max(table(x))))))
+
+
+#Option to check for NAs aftrer quick imputation
+sum(is.na(gen.imp)) # No NAs
+
+#Write the file as a matrix
+
+genfile <- as.matrix(gen.imp, row.names = F, col.names=F)
+
+mode(genfile) <- 'numeric'  #needs to be numeric 
+
+
+#import the final environemntal data
+env.data <- read.csv("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/ISSJ_environmental_data_final.csv")
+
+issj_filtered <- read.csv("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/issj_filtered.csv")
+
+
+pred <- anti_join(env.data, issj_filtered,  by="tissue_number")
+
+
+pred$tissue_number <- as.character(pred$tissue_number) # Make individual names characters (not factors)
+
+#make sure elevation is numeric
+
+mode(pred$elevation) <- 'numeric'  #needs to be numeric for some reason 
+
+
+#order the pred file so that it matches with the genetic data (which is ordered by tissue number)
+pred <- pred[order(match(pred[,1], rownames(genfile))),]
+
+# Confirm that genotypes and environmental data are in the same order
+
+identical(rownames(gen.imp), pred[,1])
+
+
+#filter tissue names out of env file since we're not testing those
+oak.pine <- pred%>% 
+  dplyr::select(-c("tissue_number","POP")) 
+
+#remove the environmental variables we are not testing
+oak.pine <- oak.pine %>%
+  dplyr::select(-c("NFFD","difference_coldest_and_warmest_month_measure_continentality_deg_C", "NFFD",
+                   "mean_summer_precip_mm", "degree.days_above_5_deg_C", "degree.days_above_18_deg_C","extreme_min_temp_over_30_years",
+                   "annual_heat_moisture_index","Hargreave_climatic_moisture_index","Hargreave_reference_evaporation",
+                   "summer_heat_moisture_index","distance","degree.days_below_18_deg_C", "mean_temp__warmest_month_deg_C", "mean_temp_coldest_month_deg_C","mean_annual_precip_mm", "percent_other", "mean_annual_temp_deg_C","elevation" ))
+
+#check correlations of predictors
+pairs.panels(oak.pine[,1:4], scale=F) #-.56 for percent pine and percent oak
+
+
+
+
+# pairs.panels(pred[,c(4,10,21,22)], scale=T)
+
+
+#Run the partial RDA conditined on geographic location (longitude which was supported by the PCA) which contributes to patterns of IBD according to MLPE
+#Test for SNP associations corrected for geography  by adding a condition for longitude 
+issj.cca<- vegan::rda(genfile~ +percent_oak +percent_pine + Condition(Longitude), data=oak.pine, scale=T)
+summary(issj.cca)
+
+
+#check to see how much of the variation is explained by the model in the R2, and how well the eigenvalues account for the explained variance
+vegan::RsquareAdj(issj.cca) #r2= 0.01930887, adusted r2= 0.003160645
+
+summary(eigenvals(issj.cca, model="constrained"))
+# Importance of components:
+#                          RDA1    RDA2
+# Eigenvalue            64.7861 56.6010
+# Proportion Explained   0.5337  0.4663
+# Cumulative Proportion  0.5337  1.0000  
+
+#We can visualize this information using a screeplot of the canonical eigenvalues by calling `screeplot`:
+
+screeplot(issj.cca)
+
+
+signif.full <- anova.cca(issj.cca, parallel=getOption("mc.cores"), model="full", permutation=99999) # using model "full" since that permutes residuals after Conditions and Constraints
+signif.full #Model highly significant  0.001 ***
+
+signif.axis <- anova.cca(issj.cca, by="axis", parallel=getOption("mc.cores"), permutation=99999)
+signif.axis
+#           Df ce      F Pr(>F)    
+# RDA1       1     64.8 1.1988  0.001 ***
+# RDA2       1     56.6 1.0473  0.067 .  
+# Residual 119   6431.1                  
+
+
+
+signif.terms <- anova.cca(issj.cca, by="terms", parallel=getOption("mc.cores"), permutation=99999)
+signif.terms
+#               Df Variance      F Pr(>F)    
+# percent_oak    1     62.0 1.1473  0.001 ***
+# percent_pine   1     59.4 1.0988  0.004 ** 
+# Residual     119   6431.1                  
+
+#checking Variance Inflation Factors for the predictor variables used in the model:
+
+vegan::vif.cca(issj.cca) 
+
+#All values are less than 2, so collinarity shouldn't be a problem. 
+
+#quick plot of the RDA output using the default plotting in `vegan`
+
+plot(issj.cca, scaling=3)          # default is axes 1 and 2
+
+###### To highlight individuals by Habitat
+
+eco <- pred %>% 
+  mutate(habitat = recode_factor(pred$POP,"E-O"="Oak","W-O"="Oak","C-O"="Oak",
+                      "E-P"="Pine","W-P"="Pine","C-P"="Pine"))
+
+eco<- eco %>% 
+  mutate(POP = recode_factor(POP,"E-O"="East","W-O"="West","C-O"="Central",
+                      "E-P"="East","W-P"="West","C-P"="Central"))
+
+
+#specify the order of the factor levels 
+eco$habitat <- factor(eco$habitat, levels=c("Oak","Pine"))
+
+eco$POP <- factor(eco$POP, levels=c("East","West","Central"))
+
+#custom color pallet
+myCol2 <- c("orange","forestgreen")
+
+#Extract the scores from the rda
+#Be sure to scale everyting symmetrically by using the scaling=3 argument which will scale based ont eh sqare root of the eigenvalues
+issj_sam_sco <- scores(issj.cca, display = "sites", scaling=3)
+issj_env_sco <- scores(issj.cca, display = "bp", scaling=3)
+issj_sam_tbl <- as_tibble(issj_sam_sco)
+issj_env_tbl <- as_tibble(issj_env_sco)
+issj_sam_tbl <- mutate(issj_sam_tbl, tissue_number=rownames(issj_sam_sco),
+                       ccatype = "sites")
+issj_sam_tbl <- left_join(eco[,c(1:2,25)], issj_sam_tbl, by="tissue_number")
+issj_env_tbl <- mutate(issj_env_tbl, vgntxt=rownames(issj_env_sco),
+                       ccatype = "bp")
+
+
+#extract the loading scores of the snps 
+
+issj_spp_sco <- scores(issj.cca, display = "species", scaling=3)
+issj_spp_tbl <- as_tibble(issj_spp_sco)
+issj_spp_tbl <- mutate(issj_spp_tbl, vgntxt=rownames(issj_spp_sco),
+                       ccatype = "species")
+
+
+#Plot the individuals on axis 1 &2 
+
+plot(issj.cca, type="n", scaling=3, choices=c(1,2))
+points(issj.cca, display="species", pch=20, cex=0.7, col="gray32", scaling=3)          # the SNPs
+points(issj.cca, display="sites", pch=21, cex=1.3, col="gray32", scaling=3, bg=myCol2[eco$habitat]) # the jays
+text(issj.cca, scaling=3, display="bp", col="#0868ac", cex=1)   # the predictors
+legend("bottomright", legend=levels(eco$habitat), bty="n", col="gray32", pch=21, cex=1, pt.bg=myCol2)
+
+
+
+#with ggplot 
+rda_plot_12 <- ggplot() +
+     geom_point(data=issj_spp_tbl, aes(x=RDA1,y=RDA2), col="gray32")  +        # the SNPs
+  geom_point(data=issj_sam_tbl,aes(x=RDA1,y=RDA2, fill=habitat), shape=21,  color="black", size=4) +# the jays
+   scale_fill_manual(name="Habitat", values=c("orange","forestgreen"))+
+  geom_hline(yintercept = 0, lty = 2) +
+      geom_vline(xintercept = 0, lty = 2) +
+    theme_few()+
+     geom_segment(data = issj_env_tbl, aes(x = 0, y = 0, xend = (RDA1*3.5),
+     yend = (RDA2*3.5)), arrow = arrow(length = unit(1/2, "picas")),
+     color = "black", size=1.2) + #plot the predictors 
+ annotate("text", x = (issj_env_tbl$RDA1*4.6), y = (issj_env_tbl$RDA2*5.5),
+             label =c("percent oak","percent pine") , color="black", size=5)+
+   xlab("RDA1") + ylab("RDA2\n") +
+  theme(legend.position =c(.97,.47),
+        legend.justification = c("right", "top"),
+    legend.title = element_text(size=12, face="bold"),
+        legend.text = element_text(size=12, face="bold"),
+        axis.title=element_text(colour="black", size = 15,face="bold"),
+     axis.text=element_text(colour="black", size = 13,face="bold"))
+
+rda_plot_12
+
+#option to split the RDA plot by the differet pine and oak plots 
+
+#or, by splitting the plots up by popualiton 
+
+
+west.issj <- issj_sam_tbl %>% 
+  dplyr::filter(POP=="West")
+
+
+east.issj <- issj_sam_tbl %>% 
+  filter(POP=="East")
+
+
+central.issj <- issj_sam_tbl%>% 
+  filter(POP=="Central")
+
+rda_plot_west <- ggplot()+
+  geom_point(data=issj_spp_tbl, aes(x=RDA1,y=RDA2), col="gray32")  +        # the SNPs
+  geom_point(data=west.issj,aes(x=RDA1,y=RDA2, fill=habitat), shape=21,  color="black", size=4) +# the jays
+   scale_fill_manual(name="Habitat", values=c("orange","forestgreen"))+
+  geom_hline(yintercept = 0, lty = 2) +
+      geom_vline(xintercept = 0, lty = 2) +
+    theme_few()+
+   xlab("") + ylab("") + ggtitle("Western")+
+  expand_limits(x = c(-2, 3.3), y = c(-2.3, 2.3))+
+  theme(legend.position ="none",
+        legend.justification = c("right", "top"),
+       plot.title = element_text(hjust = 0.5, size=15, face="bold"),
+     legend.title = element_text(size=12, face="bold"),
+        legend.text = element_text(size=12, face="bold"),
+        axis.title=element_text(colour="black", size = 20,face="bold"),
+     axis.text=element_text(colour="black", size = 13,face="bold"))
+
+rda_plot_east <- ggplot()+
+     geom_point(data=issj_spp_tbl, aes(x=RDA1,y=RDA2), col="gray32")  +        # the SNPs
+  geom_point(data=east.issj,aes(x=RDA1,y=RDA2, fill=habitat), shape=21,  color="black", size=4) +# the jays
+   scale_fill_manual(name="Habitat", values=c("orange","forestgreen"))+
+  geom_hline(yintercept = 0, lty = 2) +
+      geom_vline(xintercept = 0, lty = 2) +
+    theme_few()+
+     xlab("") + ylab("") +ggtitle("Eastern")+
+  expand_limits(x = c(-2, 3.3), y = c(-2.3, 2.3))+
+  theme(legend.position ="none",
+        legend.justification = c("right", "top"),
+        plot.title = element_text(hjust = 0.5, size=15, face="bold"),
+     legend.title = element_text(size=12, face="bold"),
+        legend.text = element_text(size=12, face="bold"),
+        axis.title=element_text(colour="black", size = 20,face="bold"),
+     axis.text=element_text(colour="black", size = 13,face="bold"))
+
+rda_plot_central <- ggplot()+
+     geom_point(data=issj_spp_tbl, aes(x=RDA1,y=RDA2), col="gray32")  +        # the SNPs
+  geom_point(data=central.issj,aes(x=RDA1,y=RDA2, fill=habitat), shape=21,  color="black", size=4) +# the jays
+   scale_fill_manual(name="Habitat", values=c("orange","forestgreen"))+
+  geom_hline(yintercept = 0, lty = 2) +
+      geom_vline(xintercept = 0, lty = 2) +
+    theme_few()+
+       xlab("") + ylab("") + ggtitle("Central")+
+  expand_limits(x = c(-2, 3.3), y = c(-2.3, 2.3))+
+  theme(legend.position ="none",
+        legend.justification = c("right", "top"),
+        plot.title = element_text(hjust = 0.5, size=15, face="bold"),
+    legend.title = element_text(size=12, face="bold"),
+        axis.title=element_text(colour="black", size = 20,face="bold"),
+     axis.text=element_text(colour="black", size = 13,face="bold"))
+
+#export inividually and make final figure in ppt
+
+```
+
+```{r}
+##########################################
+# Identify candidate SNPs
+#
+##########################################
+#Use the loadings of the SNPs (their location) in the ordination
+#space to determine which SNPs are candidates for local adaptation.
+#The SNP loadings are stored as `species` in the RDA object. We'll extract the SNP loadings from the 2 constrained axes (since we only have 2 predictors):
+
+load.cca <- scores(issj.cca, choices=c(1:2), display="species")
+
+#If we look at histograms of the loadings on each RDA axis,
+#we can see their (relatively normal) distribution. SNPs loading at the center of the distribution are not showing
+#a relationship with the environmental predictors; those loading in the tails are, and are more #likely to be under selection as a function of those predictors (or some other predictor correlated with them).
+
+
+hist(load.cca[,1], main="Loadings on RDA1")
+hist(load.cca[,2], main="Loadings on RDA2")
+
+
+
+#define the function here as `outliers`, where `x` is the vector of loadings and `z` is the number of standard deviations to use:
+
+#find loadings +/-z sd from mean loading
+#locus names of the tails
+
+outliers <- function(x,z){
+  lims <- mean(x) + c(-1, 1) * z * sd(x)       
+  x[x < lims[1] | x > lims[2]]           
+}
+
+
+#using an sd of 2.5 for moderate selection 
+
+cand1 <- outliers(load.cca[,1],2.5) #93
+cand2 <- outliers(load.cca[,2],2.5) #72
+
+
+
+ncand <- length(cand1)+length(cand2)
+ncand
+
+
+# 170 if using weaker selection cutoff of 2.5 sd form the mean
+
+#make a single data frame with the axis, SNP name, & loading:
+
+cand1 <- cbind.data.frame(rep(1,times=length(cand1)), names(cand1), unname(cand1))
+cand2 <- cbind.data.frame(rep(2,times=length(cand2)), names(cand2), unname(cand2))
+
+
+colnames(cand1) <- colnames(cand2) <- c("axis","snp","loading")
+
+
+cand <- rbind(cand1, cand2)
+
+cand$snp <- as.character(cand$snp)
+
+foo <- matrix(nrow=(ncand), ncol=2)  # 2 columns for 2 predictors
+
+colnames(foo) <- c("percent_pine", "percent_oak")
+
+oak.pine <- oak.pine %>% 
+  dplyr::select(c("percent_pine", "percent_oak" ))
+
+
+for (i in 1:length(cand$snp)) {
+  nam <- cand[i,2]
+  snp.gen <- genfile[,nam]
+  foo[i,] <- apply(oak.pine,2,function(x) cor(x,snp.gen))
+}
+
+cand <- cbind.data.frame(cand,foo)  
+head(cand)
+
+dim(cand) #170
+
+#Some of these may be duplicate detections; let's check:
+
+
+# duplicate detections:
+length(cand$snp[duplicated(cand$snp)])
+foo <- cbind(cand$axis,duplicated(cand$snp))
+table(foo[foo[,1]==1,2])
+table(foo[foo[,1]==2,2])
+table(foo[foo[,1]==3,2])
+
+cand <- cand[!duplicated(cand$snp),] #remove duplicates
+
+dim(cand) # final tally is 168
+
+
+#which predictor each snp is more correlated with
+
+for (i in 1:length(cand$snp)) {
+  bar <- cand[i,]
+  cand[i,6] <- names(which.max(abs(bar[3:5]))) # gives the variable
+  cand[i,7] <- max(abs(bar[3:5]))              # gives the correlation
+}
+
+colnames(cand)[6] <- "predictor"
+colnames(cand)[7] <- "correlation"
+
+table(cand$predictor)
+
+#for 2.5 cutoff
+   # percent_oak percent_pine 
+   #      82        86
+
+##To highlight SNPs of just percent pine and oak and change the order
+
+
+sel <- cand$snp
+env <-cand$predictor
+
+env[env=="percent_pine"] <- '#33a02c'
+env[env=="percent_oak"] <- '#e3aa1a'
+
+
+# color by predictor:
+col.pred <- rownames(issj.cca$CCA$v) # pull the all the SNP names
+
+
+for (i in 1:length(sel)) {           # color code candidate SNPs
+  foo <- match(sel[i],col.pred)
+  col.pred[foo] <- env[i]
+}
+
+colors <- c("#33a02c","#e3aa1a")
+
+col.pred[!grepl(paste(colors,collapse="|"), col.pred)] <- '#f1eef6' # non-candidate SNPs assigned transparent color
+empty <- col.pred
+
+empty[grep("#f1eef6",empty)] <- rgb(0,1,0, alpha=0) # transparent
+empty.outline <- ifelse(empty=="#00FF0000","#00FF0000","gray32")
+
+#Color the pine and oak snps
+bg <- c('#33a02c', '#e3aa1a')
+
+
+# axes 1 & 2 basic plot
+plot(issj.cca, type="n", scaling=3, xlim=c(-1,1), ylim=c(-1,1))
+points(issj.cca, display="species", pch=21, cex=1, col="grey32", bg=col.pred, scaling=3)
+points(issj.cca, display="species", pch=21, cex=1,col=empty.outline, bg=empty, scaling=3)
+text(issj.cca, scaling=3, display="bp", col="#0868ac", cex=1)
+legend("topright",legend=c("Percent Pine", "Percent Oak"), bty="n", col="gray32", pch=21, cex=1, pt.bg=bg)
+
+
+#extract the loading scores of the snps
+issj_spp_sco <- scores(issj.cca, display = "species", scaling=3)
+issj_spp_tbl <- as_tibble(issj_spp_sco)
+issj_spp_tbl_median<- mutate(issj_spp_tbl, vgntxt=rownames(issj_spp_sco),
+                       ccatype = "species")
+
+issj_spp_tbl$colors <- col.pred
+
+#select just the neutral snps and plot those first in ggplot
+issj_spp_neutral <- issj_spp_tbl %>% 
+  filter(colors=="#f1eef6")
+
+
+rda_plot_snps <- ggplot()+
+   geom_point(data=issj_spp_neutral, aes(x=RDA1*.55,y=RDA2*.55), col="grey32", size =2)  +  # the neutral SNPs
+       geom_point(data=issj_spp_tbl, aes(x=RDA1*.55,y=RDA2*.55, color=colors), size=2) + 
+        scale_color_manual(values=c("#33a02c","#e3aa1a","#00FF0000"),  name="", labels = c("Pine", "Oak", ""))+
+  #transparent outlines so you can see all the outlier snps over the neutral ones
+  geom_hline(yintercept = 0, lty = 2) +
+      geom_vline(xintercept = 0, lty = 2) +
+  expand_limits(x = c(-.1, .12), y = c(-0.05, 0.05))+
+    theme_few()+
+     geom_segment(data = issj_env_tbl, aes(x = 0, y = 0, xend = (RDA1*.7),
+     yend = (RDA2*.7)), arrow = arrow(length = unit(1/2, "picas")),
+     color = "black", size=1) + #plot the predictors 
+ annotate("text", x = (issj_env_tbl$RDA1*.8), y = (issj_env_tbl$RDA2*.8),
+             label =c("percent oak","percent pine") , color="black", size=5)+
+   xlab("RDA1") + ylab("RDA2") +
+  theme(legend.position =c(.97,.47),
+        legend.justification = c("right", "top"),
+    legend.title = element_text(size=10, face="bold"),
+        legend.text = element_text(size=10, face="bold"),
+        axis.title=element_text(colour="black", size = 15,face="bold"),
+     axis.text=element_text(colour="black", size = 13,face="bold"))
+
+rda_plot_snps
+
+
+
+```
+
+
+Make a list of the candidate snps with positional information in the vcf and write a csv of the candidates
+
+```{r}
+
+
+#load zefi coordinate information 
+
+ZEFIcor <- read.csv("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/Filtered_Data/ISSJ.ZFcorr.csv")
+
+
+#Load the GWAS results from GEMMA to get the snp numbers with positional information
+
+ISSJgwas <- as_tibble(read.delim("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/gwas_results/Beagle_imputed_GWAS.assoc.txt", header=T))
+
+ISSJgwas <- ISSJgwas %>% 
+   dplyr::rename("pvalue"="p_wald")
+
+#Split so the snp name matches the output from RDA 
+#make a new df
+foo <- data.frame(do.call('rbind', strsplit(as.character(ISSJgwas$rs),'_',fixed=TRUE)))
+
+#select jus tthe first collumn which should be the snp name 
+foo$snp <-foo$X1
+
+#Select just the snp name and replace the snp name from RDA
+foo <- foo %>% 
+  dplyr::select(c("snp"))
+
+foo$snp <- as.character(foo$snp)
+
+ISSJgwas$snp <- foo$snp
+
+
+#first, change the name of the position collumn from the gwas output to match the annotated vcf information
+ISSJgwas <- ISSJgwas %>% 
+  dplyr::rename("ZFPOS"="ps") 
+
+
+#merge with the FLSJ coordintes 
+
+ZEFIcor <- read.csv("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/Filtered_Data/ISSJ.ZFcorr.csv")
+
+ZEFIcor <- left_join(ISSJgwas, ZEFIcor, by = "ZFPOS") 
+
+ZEFIcor <- ZEFIcor %>% 
+  dplyr::select(c("ZFPOS","snp", "ZFCHROM", "CHROM",   "POS")) %>% 
+  dplyr::rename("snp.no"="snp")
+
+
+
+# Get the scores from the two constrained axes 
+rda_loci1<- load.cca[,1] 
+rda_loci2 <- load.cca[,2] 
+
+
+#count the number of loci
+
+nrda_loci <- length(rda_loci1)+length(rda_loci2)
+nrda_loci
+
+#make a single data frame with the axis, SNP name, & loading:
+
+rda_loci1 <- cbind.data.frame(rep(1,times=length(rda_loci1)), names(rda_loci1), unname(rda_loci1))
+rda_loci2 <- cbind.data.frame(rep(2,times=length(rda_loci2)), names(rda_loci2), unname(rda_loci2))
+
+
+colnames(rda_loci1) <- colnames(rda_loci2)<- c("axis","snp","loading")
+
+
+rda_loci <- rbind(rda_loci1, rda_loci2)
+
+
+#function to normalize data 
+normal <- function(x){
+  (x - min(x))/(max(x)-min(x))      
+}
+
+
+rda_loci$abs_loading <- abs(rda_loci$loading)
+
+
+rda_loci$loading_norm <-normal(rda_loci$abs_loading)
+
+
+rda_loci$snp <- as.character(rda_loci$snp)
+
+
+#Some of these may be duplicate detections; let's check:
+
+
+# duplicate detections:
+length(rda_loci$snp[duplicated(rda_loci$snp)]) #no duplicates
+foo <- cbind(rda_loci$axis,duplicated(rda_loci$snp))
+table(foo[foo[,1]==1,2])
+table(foo[foo[,1]==2,2])
+table(foo[foo[,1]==3,2])
+
+rda_loci <- rda_loci[!duplicated(rda_loci$snp),] #remove duplicates
+
+dim(rda_loci)
+
+
+
+#Split cand so the snp name matches the outliers output from the RDA which has a single collumn with snp and position
+#make a new df
+foo <- data.frame(do.call('rbind', strsplit(as.character(rda_loci$snp),'_',fixed=TRUE)))
+
+#get rid of the X in the snp name 
+foo$X1 <- str_remove(foo$X1, "X")
+
+#select just the first collumn which should be the snp name
+foo$snp <-foo$X1
+
+#Select just the snp name and replace the snp name from RDA
+foo <- foo %>% 
+  dplyr::select(c("snp"))
+
+foo$snp <- as.character(foo$snp)
+
+rda_loci$snp.no <- foo$snp
+
+
+#merge the positional info for each snp
+GEA_pos <- left_join(rda_loci,ZEFIcor,  by = "snp.no") 
+
+
+
+#Write csv for all the snp loadings
+
+#write.csv(GEA_pos,"G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/gwas_results/GEA_pos_info.csv")
+
+
+#Now, we can filter the annotated snp information and filter based on the candidates flagged by the RDA
+
+
+#Change candidates from RDA to dataframe 
+RDAcand <- as_tibble(cand)
+
+
+#merge canidate list with positional information
+
+RDAcand <- left_join(RDAcand, GEA_pos, by=c("snp"))
+  
+
+#get the end position by adding 88 
+
+RDAcand$POS_end <- RDAcand$ZFPOS + 88 
+
+
+#select the chromosome, start and end postion
+
+RDAcandlist.bedops <- RDAcand %>% 
+  dplyr::select(c("ZFCHROM","ZFPOS","POS_end"))
+
+
+#change the name in ZFCHROM so it can be read in by bedops
+RDAcandlist.bedops$ZFCHROM <- gsub("Chr_*","chr",RDAcandlist.bedops$ZFCHROM) 
+
+#write tab deliminated file with chromosome, start, and end position. To see if anything interesting pops up in bedops
+#write.table(RDAcandlist.bedops, file="G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/gwas_results/GEA.ann.txt", sep = "\t", row.names = FALSE, col.names = F, quote = F)
+
+
+
+#later write csv of resutls to see if any SNPs overlap between the GEA and the GWAS results
+#write.csv(RDAcand, file="G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/gwas_results/GEA.ann.csv")
+```
+
+
+##This code chunk below is irrelevant now. Move to section 3, Identification of loci underlying variation in bill morphology 
+
+```{r eval=FALSE, include=FALSE}
+
+#Use the R packages mygene and biomaRt to get go terms and functional information for each acession number using their 
+#zebra finch database
+#option to look at the attributes one can select for in the package
+#go_attributes <- listAttributes(mart)
+
+#results <- biomaRt::getBM(attributes = c( "entrezgene_id","go_id", "external_gene_name","name_1006", "definition_1006","family", "family_description"), mart = mart)
+
+#save the attributes as a CSV so it can be run locally instead of relying on the connection to ensemble
+
+#write.csv(results, "G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/gwas_results/tguttata_gene_ensembl.csv", row.names=F)
+
+results <- read.csv("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/gwas_results/tguttata_gene_ensembl.csv")
+
+#limit to just zebra finch and get the go information for each gene in the assembly 
+mart <- useEnsembl(biomart = "ensembl", dataset = "tguttata_gene_ensembl")
+
+
+##filter out missing values in the entrez ID collumn
+results$entrezgene_id <- as.character(results$entrezgene_id) 
+
+results <-  na.omit(results, cols="entrezgene_id")
+
+
+#can now extract the annotation information from the Bedops output
+
+GEA.ann <- read.delim("G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/gwas_results/GEA_gene_ids_25kb.bed", header = F, sep = ",", quote = "\"", comment.char = "#")
+
+
+GEA.ann <-cSplit(GEA.ann, "V4", sep=";")
+
+#filter NAs from the first ensemble ID since those are the ones without any annotation
+
+## transform all columns
+GEA.ann <-GEA.ann %>% 
+  mutate_each(funs(empty_as_na)) 
+
+GEA.ann <- GEA.ann[!is.na(GEA.ann$V4_1),]
+
+
+GEA.ann <-gather(data=GEA.ann, key="position", value="ensemble_id", 4:ncol(GEA.ann))
+
+#Get the entrez id's from mygene to get the annotation and go terms to merge 
+
+out <- as_tibble(queryMany(GEA.ann$subject_accession, scopes=c("symbol", "reporter","accession"), fields=c("entrezgene","uniprot")))
+
+GEA.ann$entrezgene_id <- out$entrezgene
+
+GEA.ann <- na.omit(GEA.ann, cols="entrezgene_id") #remove missing entrez IDs
+
+#merge with the annotation information 
+GEA.ann <- dplyr::left_join(GEA.ann, results, by="entrezgene_id", na.omit=T) 
+
+GEA.ann.genes <- GEA.ann[!duplicated(GEA.ann$external_gene_name),] #remove duplicates
+
+GEA.ann$test_name <- "GEA"
+
+#Make a pretty table by getting the positional information from the GEA and then merge it with the GWAS results 
+
+
+#Replace NA values with unknown
+GEA.ann[is.na(GEA.ann)] <- "unk" #For GEA
+
+#remove duplicates of the query name and accession
+GEA.ann.table <- GEA.ann[!duplicated(GEA.ann[c("query_id", "entrezgene_id")]),]
+
+#change the name of hte annotated list to get the positional information 
+
+GEA.ann.table <- GEA.ann.table %>% 
+  rename("query_id"="fasta.range")
+
+
+GEA.ann.table <- left_join(GEA.ann.table, RDAcand, by="fasta.range")
+
+
+GEA.ann.table <- GEA.ann.table %>% 
+  dplyr::select(c("CHROM", "POS", "ZFCHROM","ZFPOS", "abs_loading", "external_gene_name","predictor", "test_name"))%>% 
+    filter(!external_gene_name=="")
+
+GEA.ann.table <- GEA.ann.table[!duplicated(GEA.ann.table[c("CHROM", "POS","external_gene_name")]),] 
+
+GEA.ann.table$ZFCHROM <- gsub("Chr_*","",GEA.ann.table$ZFCHROM) 
+
+#group by the positional information and and create a new collumn that lists the genes that are in the region around that outlier snp
+GEA.ann.table <- as.data.table(GEA.ann.table)[, toString(external_gene_name), by = list(CHROM, POS, ZFCHROM,ZFPOS, abs_loading, predictor)] %>% 
+  rename("V1"="Genes")
+
+GEA.ann.table$predictor <- gsub("_"," ",GEA.ann.table$predictor) 
+
+#write csv to merge with the GWAs results
+
+#write.csv(GEA.ann.table, "G:/My Drive/ISSJ_Genomics_150_RAD/ISSJ_Genomics_150_RAD/data/gwas_results/GEA_ann_list.csv", row.names = F)
+
+
+```
+
+
+
