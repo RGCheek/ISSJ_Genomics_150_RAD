@@ -1,6 +1,9 @@
 # Habitat-linked genetic variation supports microgeographic adaptive divergence in Island Scrub-jays
 
-Code to study the genetic underpinnings of trait divergence at a microgeographic scale. Manuscript in review. 
+Code to study the genetic underpinnings of trait divergence at a microgeographic scale. Manuscript published in Molecular Ecology (DOI: 10.1111/mec.16438). 
+
+These data are also available through Dryad (https://doi.org/10.5061/dryad.8sf7m0cpq), and are liscenced under terms of the Creative Commons Attribution-NonCommercial
+License, which permits use, distribution and reproduction in any medium, provided the original work is properly cited and is not used for commercial purposes. 
 
 ## Data
 ### Genomic Data
